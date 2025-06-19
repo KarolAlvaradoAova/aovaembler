@@ -1,0 +1,48 @@
+{
+  "name": "embler-2.0",
+  "version": "2.0.0",
+  "description": "Sistema integral de gestión logística para empresas de reparto y distribución",
+  "private": true,
+  "workspaces": [
+    "client",
+    "server"
+  ],
+  "scripts": {
+    "dev": "concurrently \"npm run dev:client\" \"npm run dev:server\"",
+    "dev:client": "cd client && npm run dev",
+    "dev:server": "cd server && npm run dev",
+    "build": "npm run build:client && npm run build:server",
+    "build:client": "cd client && npm run build",
+    "build:server": "cd server && npm run build",
+    "install:all": "npm install && cd client && npm install && cd ../server && npm install",
+    "start": "concurrently \"npm run start:client\" \"npm run start:server\"",
+    "start:client": "cd client && npm run preview",
+    "start:server": "cd server && npm run start",
+    "test": "cd server && npm run test:endpoints",
+    "test:quick": "cd server && npm run test:quick",
+    "test:products": "cd server && npm run test:products",
+    "migrate": "cd server && npm run migrate",
+    "renovate": "cd server && npm run renovate",
+    "update:products": "cd server && npm run update:products",
+    "validate:google-maps": "node scripts/validate_google_maps.js"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  },
+  "engines": {
+    "node": ">=18.0.0",
+    "npm": ">=8.0.0"
+  },
+  "keywords": [
+    "logistica",
+    "delivery",
+    "tracking",
+    "routes",
+    "react",
+    "typescript",
+    "nodejs",
+    "express"
+  ],
+  "author": "Embler Team",
+  "license": "MIT"
+} 
