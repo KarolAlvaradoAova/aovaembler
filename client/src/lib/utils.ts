@@ -34,7 +34,16 @@ export async function fetchIncidencias() {
 export async function updatePedidoStatus(pedidoId: string | number, newStatus: string) {
   try {
     const endpoint = `${API_CONFIG.ENDPOINTS.PEDIDOS}/${pedidoId}`;
-    const result = await apiPatch(endpoint, { estado: newStatus });
+    const payload = { estado: newStatus };
+    
+    console.log('🔄 Actualizando pedido:', {
+      pedidoId,
+      newStatus,
+      endpoint,
+      payload
+    });
+    
+    const result = await apiPatch(endpoint, payload);
     console.log('✅ Pedido actualizado en backend:', result);
     return result;
   } catch (error) {
@@ -201,12 +210,22 @@ export const RouteAccess = {
   
   // Obtener próxima parada de un repartidor
   async getNextStop(repartidorId: number) {
-    const routeData = await fetchRepartidorActiveRoute(repartidorId);
-    if (!routeData || !routeData.route) return null;
-    
-    const route = routeData.route;
-    const nextStopIndex = route.current_stop_index;
-    return route.stops[nextStopIndex] || null;
+    try {
+      const route = await this.getRepartidorRoute(repartidorId);
+      if (!route || route.stops.length === 0) {
+        return null;
+      }
+      
+      // Buscar la primera parada pendiente
+      const pendingStop = route.stops.find((stop: any) => 
+        stop.tipo === 'parada' && stop.status === 'pendiente'
+      );
+      
+      return pendingStop || null;
+    } catch (error) {
+      console.error('❌ Error obteniendo siguiente parada:', error);
+      return null;
+    }
   },
   
   // Trigger auto-optimización para un repartidor
@@ -339,6 +358,523 @@ export async function updateStopStatus(
     });
   } catch (error) {
     console.error('❌ Error actualizando estado de parada:', error);
+    throw error;
+  }
+}
+
+// === FUNCIONES PARA CARGAR DATOS DESDE CSV ===
+
+// Función auxiliar para parsear una línea de CSV respetando las comillas
+function parseCSVLine(line: string) {
+  const values = [];
+  let currentValue = '';
+  let insideQuotes = false;
+  
+  for (let i = 0; i < line.length; i++) {
+    const char = line[i];
+    
+    if (char === '"') {
+      insideQuotes = !insideQuotes;
+    } else if (char === ',' && !insideQuotes) {
+      values.push(currentValue.trim());
+      currentValue = '';
+    } else {
+      currentValue += char;
+    }
+  }
+  
+  values.push(currentValue.trim());
+  return values.map(value => value.replace(/^"|"$/g, '').trim());
+}
+
+// Función para cargar pedidos desde pedidosdb.csv
+export async function fetchPedidosFromCSV() {
+  try {
+    const response = await fetch('/data/csv dbs/pedidosdb.csv');
+    const csvText = await response.text();
+    const lines = csvText.split('\n');
+    const headers = lines[0].split(',').map(header => header.trim());
+    
+    const pedidos = lines.slice(1)
+      .filter(line => line.trim())
+      .map(line => {
+        const values = parseCSVLine(line);
+        const pedido: any = {};
+        headers.forEach((header, index) => {
+          pedido[header.trim()] = values[index] || '';
+        });
+        return pedido;
+      });
+    
+    return pedidos;
+  } catch (error) {
+    console.error('❌ Error cargando pedidos desde CSV:', error);
+    return [];
+  }
+}
+
+// Función para cargar usuarios desde users.csv
+export async function fetchUsersFromCSV() {
+  try {
+    const response = await fetch('/data/csv dbs/users.csv');
+    const csvText = await response.text();
+    const lines = csvText.split('\n');
+    const headers = lines[0].split(',');
+    
+    const users = lines.slice(1).filter(line => line.trim()).map(line => {
+      const values = line.split(',').map(value => value.replace(/"/g, ''));
+      const user: any = {};
+      headers.forEach((header, index) => {
+        user[header.trim()] = values[index]?.trim() || '';
+      });
+      return user;
+    });
+    
+    return users;
+  } catch (error) {
+    console.error('❌ Error cargando usuarios desde CSV:', error);
+    return [];
+  }
+}
+
+// Función para cargar incidencias desde incidenciasdb.csv
+export async function fetchIncidenciasFromCSV() {
+  try {
+    const response = await fetch('/data/csv dbs/incidenciasdb.csv');
+    const csvText = await response.text();
+    const lines = csvText.split('\n');
+    const headers = lines[0].split(',');
+    
+    const incidencias = lines.slice(1).filter(line => line.trim()).map(line => {
+      const values = parseCSVLine(line);
+      const incidencia: any = {};
+      headers.forEach((header, index) => {
+        incidencia[header.trim()] = values[index] || '';
+      });
+      return incidencia;
+    });
+    
+    return incidencias;
+  } catch (error) {
+    console.error('❌ Error cargando incidencias desde CSV:', error);
+    return [];
+  }
+}
+
+// === FUNCIONES PARA GPS TRACKING HÍBRIDO (6.2 + 7.6) ===
+
+// Función para validar y corregir coordenadas
+function validateAndFixCoordinates(lat: number, lng: number): { lat: number; lng: number } {
+  // Validar rangos de coordenadas válidas
+  const isValidLat = lat >= -90 && lat <= 90;
+  const isValidLng = lng >= -180 && lng <= 180;
+  
+  // Si ambas coordenadas están en rangos válidos, están correctas
+  if (isValidLat && isValidLng) {
+    return { lat, lng };
+  }
+  
+  // Si están invertidas, intercambiarlas
+  if (!isValidLat && !isValidLng) {
+    return { lat: lng, lng: lat };
+  }
+  
+  // Si solo una está en rango válido, asumir que están invertidas
+  if (isValidLat && !isValidLng) {
+    return { lat: lng, lng: lat };
+  }
+  
+  if (!isValidLat && isValidLng) {
+    return { lat: lng, lng: lat };
+  }
+  
+  // Fallback: devolver las originales
+  return { lat, lng };
+}
+
+// Función para cargar repartidores con rutas desde archivos JSON (compatible con 7.6)
+export async function fetchRepartidoresWithRoutes() {
+  try {
+    // 1. Cargar usuarios repartidores desde CSV
+    const users = await fetchUsersFromCSV();
+    const repartidores = users.filter((u: any) => u.type_u === 'repartidor');
+    
+    // 2. Cargar pedidos para obtener estados actuales
+    const pedidosAll = await fetchPedidosFromCSV();
+    
+    // 3. Para cada repartidor, cargar su ruta desde archivo JSON
+    const repartidoresWithRoutes = await Promise.all(repartidores.map(async (repartidor: any) => {
+      // Usar ubicación real del CSV si está disponible, sino usar ubicación por defecto
+      let baseLocation;
+      if (repartidor.lat && repartidor.lon) {
+        baseLocation = { 
+          lat: parseFloat(repartidor.lat), 
+          lng: parseFloat(repartidor.lon) 
+        };
+      } else {
+        // Ubicación por defecto en Ciudad de México si no hay datos
+        baseLocation = { lat: 19.4326, lng: -99.1332 };
+      }
+      
+      // Agregar pequeña variación aleatoria para simular movimiento
+      const variation = 0.001;
+      const ubicacion = {
+        lat: baseLocation.lat + (Math.random() - 0.5) * variation,
+        lng: baseLocation.lng + (Math.random() - 0.5) * variation,
+        status: repartidor.sta_u || 'disponible',
+        timestamp: new Date().toISOString()
+      };
+
+      // 4. Cargar ruta desde archivo JSON
+      let ruta_actual = [];
+      try {
+        const routeRes = await fetch(`/data/routes/route_${repartidor.id_u}.json`);
+        if (routeRes.ok) {
+          const routeData = await routeRes.json();
+          if (routeData.stops && routeData.stops.length > 0) {
+            // Convertir stops del JSON a formato ruta_actual (compatible con 6.2)
+            ruta_actual = routeData.stops.map((stop: any) => {
+              // Validar y corregir coordenadas
+              const fixedCoords = validateAndFixCoordinates(stop.lat, stop.lng);
+              
+              if (stop.type === 'origin') {
+                return {
+                  tipo: 'origen',
+                  lat: fixedCoords.lat,
+                  lng: fixedCoords.lng,
+                  label: stop.address || 'Ubicación actual',
+                  status: ubicacion.status,
+                  timestamp: ubicacion.timestamp
+                };
+              } else if (stop.type === 'delivery') {
+                // Buscar pedido correspondiente para obtener estado actual
+                const pedido = pedidosAll.find((p: any) => String(p.id_p) === String(stop.pedido_id));
+                return {
+                  tipo: 'parada',
+                  pedido_id: stop.pedido_id,
+                  lat: fixedCoords.lat,
+                  lng: fixedCoords.lng,
+                  label: stop.address,
+                  status: pedido ? pedido.sta_p : 'pendiente'
+                };
+              }
+              return null;
+            }).filter(Boolean);
+            
+            console.log(`✅ Ruta cargada para ${repartidor.name_u} con ${ruta_actual.length} paradas`);
+          }
+        }
+      } catch (error) {
+        console.error(`Error cargando ruta para ${repartidor.name_u}:`, error);
+      }
+
+      return {
+        id: repartidor.id_u,
+        nombre: repartidor.name_u,
+        tipo_vehiculo: repartidor.vehi_u,
+        ubicacion_actual: ubicacion,
+        ruta_actual
+      };
+    }));
+
+    return repartidoresWithRoutes;
+  } catch (error) {
+    console.error('❌ Error cargando repartidores con rutas:', error);
+    throw error;
+  }
+}
+
+// Función para obtener datos de tracking en formato compatible con 6.2
+export async function fetchRepartidoresLive() {
+  try {
+    const repartidoresWithRoutes = await fetchRepartidoresWithRoutes();
+    
+    // Convertir a formato compatible con el tracking de 6.2
+    const trackingData = repartidoresWithRoutes.map((r: any) => {
+      const status = r.ubicacion_actual.status;
+      let speed = 0;
+
+      if (status === 'en_ruta' || status === 'entregando' || status === 'regresando') {
+        speed = Math.floor(Math.random() * 40) + 20; // Velocidad simulada de 20 a 60 km/h
+      }
+
+      return {
+        repartidorId: Number(r.id),
+        nombre: r.nombre,
+        tipo_vehiculo: r.tipo_vehiculo,
+        location: {
+          lat: r.ubicacion_actual.lat,
+          lng: r.ubicacion_actual.lng,
+          lastUpdate: r.ubicacion_actual.timestamp,
+          status: status,
+          speed: speed // Velocidad simulada más realista
+        },
+        isOnline: true,
+        ruta_actual: r.ruta_actual
+      };
+    });
+
+    return trackingData;
+  } catch (error) {
+    console.error('❌ Error obteniendo datos de tracking:', error);
+    throw error;
+  }
+}
+
+// Función para actualizar estado de una parada específica
+export async function updateStopStatusInRoute(
+  repartidorId: number,
+  stopIndex: number,
+  newStatus: string
+) {
+  try {
+    // Importar el servicio de rutas
+    const { googleRoutesService } = await import('./google-routes');
+    
+    // Actualizar estado en el servicio de rutas
+    googleRoutesService.updateStopStatus(repartidorId, stopIndex, newStatus);
+    
+    // También actualizar en el CSV de pedidos si es necesario
+    const pedidos = await fetchPedidosFromCSV();
+    const route = googleRoutesService.getRoute(repartidorId);
+    
+    if (route && route.stops[stopIndex] && route.stops[stopIndex].pedido_id) {
+      const pedidoId = route.stops[stopIndex].pedido_id;
+      await updatePedidoStatus(pedidoId, newStatus);
+    }
+    
+    console.log(`✅ Estado actualizado para parada ${stopIndex} del repartidor ${repartidorId}`);
+  } catch (error) {
+    console.error('❌ Error actualizando estado de parada:', error);
+    throw error;
+  }
+}
+
+// Función para obtener ruta específica de un repartidor
+export async function getRepartidorRoute(repartidorId: number) {
+  try {
+    const { googleRoutesService } = await import('./google-routes');
+    return googleRoutesService.getRoute(repartidorId);
+  } catch (error) {
+    console.error('❌ Error obteniendo ruta del repartidor:', error);
+    return null;
+  }
+}
+
+// Función para limpiar todas las rutas del mapa
+export async function clearAllRoutes() {
+  try {
+    const { googleRoutesService } = await import('./google-routes');
+    googleRoutesService.clearAllRoutes();
+  } catch (error) {
+    console.error('❌ Error limpiando rutas:', error);
+  }
+}
+
+// Función para simular movimiento de repartidor
+export function simulateRepartidorMovement(
+  repartidorId: number,
+  currentLat: number,
+  currentLng: number,
+  targetLat: number,
+  targetLng: number,
+  steps: number = 10
+) {
+  const latStep = (targetLat - currentLat) / steps;
+  const lngStep = (targetLng - currentLng) / steps;
+  
+  const positions = [];
+  for (let i = 0; i <= steps; i++) {
+    positions.push({
+      lat: currentLat + (latStep * i),
+      lng: currentLng + (lngStep * i),
+      timestamp: new Date(Date.now() + (i * 1000)).toISOString()
+    });
+  }
+  
+  return positions;
+}
+
+// Función para calcular distancia entre dos puntos
+export function calculateDistanceBetweenPoints(
+  lat1: number,
+  lng1: number,
+  lat2: number,
+  lng2: number
+): number {
+  const R = 6371; // Radio de la Tierra en km
+  const dLat = toRad(lat2 - lat1);
+  const dLng = toRad(lng2 - lng1);
+  const a = 
+    Math.sin(dLat/2) * Math.sin(dLat/2) +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * 
+    Math.sin(dLng/2) * Math.sin(dLng/2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+  return R * c;
+}
+
+// Función para obtener el estado de un pedido desde CSV
+export async function getPedidoStatus(pedidoId: string): Promise<string> {
+  try {
+    const pedidos = await fetchPedidosFromCSV();
+    const pedido = pedidos.find((p: any) => String(p.id_p) === String(pedidoId));
+    return pedido ? pedido.sta_p : 'pendiente';
+  } catch (error) {
+    console.error('❌ Error obteniendo estado del pedido:', error);
+    return 'pendiente';
+  }
+}
+
+// Función para actualizar estado de pedido en CSV (simulación)
+export async function updatePedidoStatusInCSV(pedidoId: string, newStatus: string) {
+  try {
+    // En un sistema real, esto actualizaría el archivo CSV
+    // Por ahora, solo simulamos la actualización
+    console.log(`🔄 Simulando actualización de pedido ${pedidoId} a estado: ${newStatus}`);
+    
+    // También actualizar en el backend si está disponible
+    await updatePedidoStatus(pedidoId, newStatus);
+    
+    return true;
+  } catch (error) {
+    console.error('❌ Error actualizando estado del pedido:', error);
+    return false;
+  }
+}
+
+// Función para obtener información completa de un repartidor
+export async function getRepartidorInfo(repartidorId: number) {
+  try {
+    const users = await fetchUsersFromCSV();
+    const repartidor = users.find((u: any) => u.id_u === repartidorId && u.type_u === 'repartidor');
+    
+    if (!repartidor) {
+      throw new Error(`Repartidor ${repartidorId} no encontrado`);
+    }
+    
+    // Obtener ruta activa
+    const route = await getRepartidorRoute(repartidorId);
+    
+    return {
+      ...repartidor,
+      ruta_actual: route?.stops || []
+    };
+  } catch (error) {
+    console.error('❌ Error obteniendo información del repartidor:', error);
+    throw error;
+  }
+}
+
+// Función para validar si un repartidor tiene ruta activa
+export async function hasActiveRoute(repartidorId: number): Promise<boolean> {
+  try {
+    const route = await getRepartidorRoute(repartidorId);
+    return !!(route !== null && route?.stops && route.stops.length > 0);
+  } catch (error) {
+    console.error('❌ Error validando ruta activa:', error);
+    return false;
+  }
+}
+
+// Función para marcar una parada como completada
+export async function completeStop(
+  repartidorId: number,
+  stopIndex: number,
+  deliveryEvidence?: string
+) {
+  try {
+    // Actualizar estado de la parada
+    await updateStopStatusInRoute(repartidorId, stopIndex, 'entregado');
+    
+    // Si hay evidencia de entrega, guardarla
+    if (deliveryEvidence) {
+      console.log(`📸 Evidencia de entrega guardada: ${deliveryEvidence}`);
+    }
+    
+    console.log(`✅ Parada ${stopIndex} marcada como completada para repartidor ${repartidorId}`);
+    return true;
+  } catch (error) {
+    console.error('❌ Error completando parada:', error);
+    return false;
+  }
+}
+
+// ✅ NUEVAS FUNCIONES PARA SERVICIO DE ESTADOS
+
+// Función para obtener estados de todos los repartidores
+export async function getRepartidoresStatus() {
+  try {
+    const endpoint = `${API_CONFIG.BASE_URL}/api/status/repartidores`;
+    const response = await fetch(endpoint);
+    if (!response.ok) throw new Error('Error obteniendo estados');
+    return await response.json();
+  } catch (error) {
+    console.error('❌ Error obteniendo estados de repartidores:', error);
+    throw error;
+  }
+}
+
+// Función para actualizar estado de todos los repartidores automáticamente
+export async function updateAllRepartidorStatus() {
+  try {
+    const endpoint = `${API_CONFIG.BASE_URL}/api/status/repartidores/update-all`;
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' }
+    });
+    if (!response.ok) throw new Error('Error actualizando estados');
+    return await response.json();
+  } catch (error) {
+    console.error('❌ Error actualizando estados de repartidores:', error);
+    throw error;
+  }
+}
+
+// Función para actualizar estado de un repartidor específico
+export async function updateRepartidorStatus(repartidorId: string | number) {
+  try {
+    const endpoint = `${API_CONFIG.BASE_URL}/api/status/repartidores/${repartidorId}/update`;
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' }
+    });
+    if (!response.ok) throw new Error('Error actualizando estado del repartidor');
+    return await response.json();
+  } catch (error) {
+    console.error('❌ Error actualizando estado del repartidor:', error);
+    throw error;
+  }
+}
+
+// Función para notificar entrega completada
+export async function notifyDeliveryCompleted(repartidorId: string | number, pedidoId: string | number) {
+  try {
+    const endpoint = `${API_CONFIG.BASE_URL}/api/status/repartidores/${repartidorId}/delivery-completed`;
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pedidoId })
+    });
+    if (!response.ok) throw new Error('Error notificando entrega completada');
+    return await response.json();
+  } catch (error) {
+    console.error('❌ Error notificando entrega completada:', error);
+    throw error;
+  }
+}
+
+// Función para notificar inicio de ruta
+export async function notifyRouteStarted(repartidorId: string | number) {
+  try {
+    const endpoint = `${API_CONFIG.BASE_URL}/api/status/repartidores/${repartidorId}/route-started`;
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' }
+    });
+    if (!response.ok) throw new Error('Error notificando inicio de ruta');
+    return await response.json();
+  } catch (error) {
+    console.error('❌ Error notificando inicio de ruta:', error);
     throw error;
   }
 }

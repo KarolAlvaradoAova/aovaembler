@@ -1,0 +1,94 @@
+{
+  "repartidor_id": 7,
+  "repartidor_nombre": "Carlos Ru�z",
+  "sucursal": "lindavista",
+  "vehicle_type": "moto",
+  "created_at": "2025-06-19T22:36:21.897Z",
+  "status": "active",
+  "current_stop_index": 0,
+  "total_distance": 0,
+  "total_duration": 0,
+  "stops": [
+    {
+      "lat": -99.143365,
+      "lng": 19.516238,
+      "address": "Ubicación de Carlos Ru�z",
+      "repartidor_id": 7,
+      "order": 0,
+      "type": "origin"
+    },
+    {
+      "lat": 19.5101,
+      "lng": -99.1301,
+      "address": "Av. Lindavista 456, CDMX",
+      "pedido_id": 1003,
+      "productos": "2x36118009701,1x0000535658 *5",
+      "sucursal": "lindavista",
+      "order": 1,
+      "type": "delivery"
+    },
+    {
+      "lat": 19.42,
+      "lng": -99.12,
+      "address": "Calle Ejemplo 321, CDMX",
+      "pedido_id": 1006,
+      "productos": "5x0001802609 *1,3x0002009323 *1",
+      "sucursal": "lindavista",
+      "order": 2,
+      "type": "delivery"
+    },
+    {
+      "lat": 19.520345,
+      "lng": -99.125678,
+      "address": "Av. Miguel Hidalgo 123, CDMX",
+      "pedido_id": 1009,
+      "productos": "1x0005426218,2x0009050242 *1",
+      "sucursal": "lindavista",
+      "order": 3,
+      "type": "delivery"
+    },
+    {
+      "lat": 19.515432,
+      "lng": -99.135678,
+      "address": "Av. Revolución 890, CDMX",
+      "pedido_id": 1013,
+      "productos": "1x0015405117 *1,3x0018203945 *1",
+      "sucursal": "lindavista",
+      "order": 4,
+      "type": "delivery"
+    },
+    {
+      "lat": 19.495432,
+      "lng": -99.145678,
+      "address": "Av. Universidad 234, CDMX",
+      "pedido_id": 1017,
+      "productos": "2x0004600183 *1,4x0001405185 *1",
+      "sucursal": "lindavista",
+      "order": 5,
+      "type": "delivery"
+    },
+    {
+      "lat": 19.485432,
+      "lng": -99.155678,
+      "address": "Av. Tlalpan 456, CDMX",
+      "pedido_id": 1021,
+      "productos": "1x0011531132 *1,3x0004230512 *1",
+      "sucursal": "lindavista",
+      "order": 6,
+      "type": "delivery"
+    },
+    {
+      "lat": 19.475432,
+      "lng": -99.165678,
+      "address": "Av. Coyoacán 890, CDMX",
+      "pedido_id": 1025,
+      "productos": "2x0015456309 *1,1x0004602483 *1",
+      "sucursal": "lindavista",
+      "order": 7,
+      "type": "delivery"
+    }
+  ],
+  "pedidos_count": 7,
+  "optimized": false,
+  "error": "ZERO_RESULTS"
+}

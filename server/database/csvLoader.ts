@@ -3,9 +3,9 @@ import path from 'path';
 import { parse } from 'csv-parse/sync';
 import { stringify } from 'csv-stringify/sync';
 
-// Función para cargar CSV desde backup_csv
+// Función para cargar CSV desde csv dbs
 export function loadCSV(fileName: string) {
-  const filePath = path.join(__dirname, '../public/data/backup_csv', fileName);
+  const filePath = path.join(__dirname, '../../client/public/data/csv dbs', fileName);
   
   if (!fs.existsSync(filePath)) {
     console.log(`⚠️  Archivo CSV no encontrado: ${fileName}`);
@@ -22,7 +22,7 @@ export function loadCSV(fileName: string) {
 // Función para guardar CSV
 export function saveCSV(fileName: string, data: any[]) {
   try {
-    const filePath = path.join(__dirname, '../public/data/backup_csv', fileName);
+    const filePath = path.join(__dirname, '../../client/public/data/csv dbs', fileName);
     
     // Convertir objetos a CSV
     const csvContent = stringify(data, {
@@ -42,7 +42,7 @@ export function saveCSV(fileName: string, data: any[]) {
 
 // Funciones específicas para cargar cada tipo de datos
 export async function loadPedidos() {
-  return loadCSV('pedidos.csv');
+  return loadCSV('pedidosdb.csv');
 }
 
 export async function loadClientes() {
@@ -50,7 +50,7 @@ export async function loadClientes() {
 }
 
 export async function loadSucursales() {
-  return loadCSV('sucursales.csv');
+  return loadCSV('sucursalesdb.csv');
 }
 
 export async function loadRepartidores() {
@@ -62,7 +62,7 @@ export async function loadAlmacenistas() {
 }
 
 export async function loadIncidencias() {
-  return loadCSV('incidencias.csv');
+  return loadCSV('incidenciasdb.csv');
 }
 
 // === NUEVAS FUNCIONES PARA RUTAS ===
@@ -122,24 +122,33 @@ export async function saveParadasRuta(paradas: any[]) {
 // Función para actualizar un pedido
 export async function updatePedido(id: string | number, data: any) {
   try {
-    const pedidos = loadCSV('pedidos.csv');
-    const pedidoIndex = pedidos.findIndex((p: any) => String(p.id) === String(id));
-    
+    console.log(`🔄 CSV: Actualizando pedido ${id} con datos:`, data);
+    const pedidos = loadCSV('pedidosdb.csv');
+    console.log(`📊 CSV: Cargados ${pedidos.length} pedidos`);
+    // Buscar por id_p
+    const pedidoIndex = pedidos.findIndex((p: any) => String(p.id_p) === String(id));
+    console.log(`🔍 CSV: Buscando pedido con id_p=${id}, encontrado en índice: ${pedidoIndex}`);
     if (pedidoIndex === -1) {
+      console.log('❌ CSV: Pedido no encontrado');
+      console.log('📋 CSV: IDs disponibles:', pedidos.map((p: any) => p.id_p).slice(0, 10));
       throw new Error(`Pedido con ID ${id} no encontrado`);
     }
-    
+    console.log('📋 CSV: Pedido original:', pedidos[pedidoIndex]);
+    // Adaptar campos: si viene 'estado', actualizar 'sta_p'
+    let updateData = { ...data };
+    if (updateData.estado) {
+      updateData.sta_p = updateData.estado;
+      delete updateData.estado;
+    }
     // Actualizar pedido
-    pedidos[pedidoIndex] = { ...pedidos[pedidoIndex], ...data };
-    
+    pedidos[pedidoIndex] = { ...pedidos[pedidoIndex], ...updateData };
+    console.log('📋 CSV: Pedido actualizado:', pedidos[pedidoIndex]);
     // Guardar CSV actualizado
-    saveCSV('pedidos.csv', pedidos);
-    
-    console.log(`✅ Pedido ${id} actualizado exitosamente`);
+    saveCSV('pedidosdb.csv', pedidos);
+    console.log(`✅ CSV: Pedido ${id} actualizado exitosamente`);
     return pedidos[pedidoIndex];
-    
   } catch (error) {
-    console.error(`❌ Error actualizando pedido ${id}:`, error);
+    console.error(`❌ CSV: Error actualizando pedido ${id}:`, error);
     throw error;
   }
 }
@@ -161,7 +170,7 @@ export async function saveRepartidores(repartidores: any[]) {
 }
 
 export async function savePedidos(pedidos: any[]) {
-  return saveCSV('pedidos.csv', pedidos);
+  return saveCSV('pedidosdb.csv', pedidos);
 }
 
 // Función para actualizar una parada de ruta por pedido_id (y opcionalmente route_id)
@@ -190,7 +199,8 @@ export async function updateParadaRuta(pedidoId: string | number, data: any, rou
 
 // Inicializa rutas persistentes para todos los repartidores
 export async function initPersistentRoutes() {
-  const repartidores = await loadRepartidores();
+  const users = await loadUsers();
+  const repartidores = users.filter((u: any) => u.role === 'repartidor');
   let rutas = await loadRutasActivas();
   const now = new Date().toISOString();
 
@@ -203,9 +213,9 @@ export async function initPersistentRoutes() {
       ruta = {
         id: `ruta_persistente_${repartidor.id}`,
         repartidor_id: repartidor.id,
-        repartidor_nombre: repartidor.nombre,
+        repartidor_nombre: repartidor.name_u,
         sucursal_origen: '',
-        vehicle_type: repartidor.tipo_vehiculo || 'car',
+        vehicle_type: repartidor.vehi_u || 'car',
         status: 'vacía',
         created_at: now,
         started_at: '',
@@ -231,4 +241,12 @@ export async function initPersistentRoutes() {
   } else {
     console.log('✅ Todas las rutas persistentes ya existen');
   }
+}
+
+export async function loadUsers() {
+  return loadCSV('users.csv');
+}
+
+export async function saveUsers(users: any[]) {
+  return saveCSV('users.csv', users);
 } 

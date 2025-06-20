@@ -1,0 +1,21 @@
+{
+  "name": "embler-route-optimizer",
+  "version": "1.0.0",
+  "description": "Script para optimizar rutas de repartidores usando Google Maps API",
+  "main": "optimize-routes.js",
+  "scripts": {
+    "optimize": "node optimize-routes.js",
+    "start": "node optimize-routes.js"
+  },
+  "dependencies": {
+    "csv-parse": "^5.5.3"
+  },
+  "keywords": [
+    "google-maps",
+    "route-optimization",
+    "delivery",
+    "logistics"
+  ],
+  "author": "Embler Team",
+  "license": "MIT"
+} 

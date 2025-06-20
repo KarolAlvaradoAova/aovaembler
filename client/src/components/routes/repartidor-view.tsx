@@ -2,7 +2,7 @@ import React, { useEffect, useState, useContext, useCallback } from 'react';
 import { ArrowLeft, MoreVertical, Home, Truck, MapPin, Clock, Package, Check, Navigation, Copy, Box, ShoppingBag, ExternalLink, Camera } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from '@/components/ui/dropdown-menu';
-import { fetchPedidos, fetchRepartidores, updatePedidoStatus, fetchRepartidorLive, generateGoogleMapsDirectionsUrl, completeDelivery, updateStopStatus } from '@/lib/utils';
+import { fetchPedidos, updatePedidoStatus, fetchRepartidorLive, generateGoogleMapsDirectionsUrl, completeDelivery, updateStopStatus, fetchPedidosFromCSV, fetchUsersFromCSV, notifyDeliveryCompleted, notifyRouteStarted } from '@/lib/utils';
 import copy from 'copy-to-clipboard';
 import { useToast } from '@/hooks/use-toast';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
@@ -41,27 +41,50 @@ export function RepartidorView() {
     status: 'disponible'
   });
 
+  // NUEVA FUNCIÓN: Cargar pedidos desde la ruta activa y pedidosdb.csv
   const loadPedidos = useCallback(async () => {
     try {
-      const [pedidosData, repartidoresData] = await Promise.all([
-        fetchPedidos(),
-        fetchRepartidores(),
-      ]);
-      
-      // Buscar repartidor por nombre (user.nombre)
-      const rep = repartidoresData.find((r: any) => r.nombre === user?.nombre);
+      // 1. Obtener usuario repartidor
+      const users = await fetchUsersFromCSV();
+      const rep = users.find((u: any) => u.name_u === user?.nombre && u.type_u === 'repartidor');
       setRepartidor(rep);
-      
-      if (rep) {
-        // Filtrar pedidos asignados a este repartidor (solo datos reales)
-        const pedidosFiltrados = pedidosData.filter((p: any) => 
-          String(p.repartidor_asignado) === String(rep.id)
-        );
-        setPedidos(pedidosFiltrados);
-      } else {
-        // Si no se encuentra el repartidor, mostrar array vacío
+      if (!rep) {
         setPedidos([]);
+        return;
       }
+      // 2. Leer archivo de ruta activa
+      const routeRes = await fetch(`/data/routes/route_${rep.id_u}.json`);
+      if (!routeRes.ok) {
+        setPedidos([]);
+        return;
+      }
+      const routeData = await routeRes.json();
+      // 3. Leer todos los pedidos
+      const pedidosAll = await fetchPedidosFromCSV();
+      // 4. Construir lista de entregas en el orden de la ruta
+      const stops = (routeData.stops || []).filter((s: any) => s.type === 'delivery');
+      const pedidosRuta = stops.map((stop: any) => {
+        const pedido = pedidosAll.find((p: any) => String(p.id_p) === String(stop.pedido_id));
+        if (!pedido) return null;
+        // Adaptar campos para la UI existente
+        return {
+          ...pedido,
+          id: pedido.id_p,
+          direccion: pedido.loc_p,
+          latitud: pedido.lat,
+          longitud: pedido.long,
+          sucursal_asignada: pedido.suc_p,
+          productos: pedido.prod_p,
+          productos_detalle: pedido.prode_p,
+          estado: pedido.sta_p,
+          pedido_id: pedido.id_p,
+          // Puedes agregar más campos si la UI los requiere
+        };
+      }).filter(Boolean);
+      // 5. Mostrar pedidos pendientes arriba y entregados abajo
+      const pendientes = pedidosRuta.filter((p: any) => p.estado !== 'entregado');
+      const entregados = pedidosRuta.filter((p: any) => p.estado === 'entregado');
+      setPedidos([...pendientes, ...entregados]);
     } catch (error) {
       console.error('Error loading data:', error);
       toast({ 
@@ -119,14 +142,10 @@ export function RepartidorView() {
     return () => clearInterval(interval);
   }, [repartidor]);
 
-  const handleCopyCoordinates = (pedido: any) => {
-    const coordinates = `${pedido.latitud}, ${pedido.longitud}`;
-    copy(coordinates);
-    toast({ 
-      title: 'Coordenadas copiadas', 
-      description: `${coordinates} copiado al portapapeles`,
-      duration: 2000
-    });
+  const handleOpenGoogleMaps = (pedido: any) => {
+    const coordinates = `${pedido.latitud},${pedido.longitud}`;
+    const url = `https://www.google.com/maps/search/?api=1&query=${coordinates}`;
+    window.open(url, '_blank');
   };
 
   // Funciones simplificadas para CSV - sin productos detallados
@@ -166,6 +185,14 @@ export function RepartidorView() {
           const stopResult = await updateStopStatus(repartidor.id, pedidoId, 'completed', deliveryEvidence);
           console.log('✅ Parada actualizada en ruta:', stopResult);
           
+          // ✅ NUEVO: Notificar entrega completada al servicio de estados
+          try {
+            await notifyDeliveryCompleted(repartidor.id, pedidoId);
+            console.log('📊 Estado del repartidor actualizado automáticamente');
+          } catch (statusError) {
+            console.error('⚠️ Error notificando entrega completada:', statusError);
+          }
+          
           // Si completó toda la ruta, mostrar mensaje especial
           if (stopResult.rutaCompletada) {
             toast({
@@ -181,10 +208,20 @@ export function RepartidorView() {
         }
       }
       
-      // 3. Recargar datos desde backend
+      // 3. Si se está marcando como en_ruta, notificar inicio de ruta
+      if (newStatus === 'en_ruta' && repartidor) {
+        try {
+          await notifyRouteStarted(repartidor.id);
+          console.log('🚀 Inicio de ruta notificado al servicio de estados');
+        } catch (statusError) {
+          console.error('⚠️ Error notificando inicio de ruta:', statusError);
+        }
+      }
+      
+      // 4. Recargar datos desde backend
       await loadPedidos();
       
-      // 4. Mostrar mensaje de éxito
+      // 5. Mostrar mensaje de éxito
       toast({
         title: '✅ Estado actualizado',
         description: `${actionName} realizada exitosamente`,
@@ -215,24 +252,24 @@ export function RepartidorView() {
 
   const getStatusColor = (estado: string) => {
     switch (estado) {
-      case 'aceptado': return 'status-info';
+      case 'pendiente': return 'status-info';
+      case 'surtido': return 'status-info';
+      case 'recogido': return 'status-warning';
       case 'en_ruta': return 'status-warning';
       case 'en_ubicacion': return 'status-warning';
       case 'entregado': return 'status-success';
-      case 'pendiente': return 'status-info';
-      case 'surtido': return 'status-info';
       default: return 'status-info';
     }
   };
 
   const getStatusText = (estado: string) => {
     switch (estado) {
-      case 'aceptado': return 'Aceptado';
+      case 'pendiente': return 'Pendiente';
+      case 'surtido': return 'Surtido';
+      case 'recogido': return 'Recogido';
       case 'en_ruta': return 'En ruta';
       case 'en_ubicacion': return 'En ubicación';
       case 'entregado': return 'Entregado';
-      case 'pendiente': return 'Pendiente';
-      case 'surtido': return 'Surtido';
       default: return 'Desconocido';
     }
   };
@@ -248,11 +285,38 @@ export function RepartidorView() {
   };
 
   // Función para parsear productos detallados
-  const parseProductosDetalle = (productosDetalle: string) => {
+  const parseProductosDetalle = (productosStr: string, detallesJSON?: string) => {
     try {
-      return JSON.parse(productosDetalle);
+      // Primero parseamos los detalles JSON si están disponibles
+      let detalles: { codigo: string; nombre: string; cantidad: number }[] = [];
+      if (detallesJSON) {
+        try {
+          detalles = JSON.parse(detallesJSON);
+        } catch (e) {
+          console.error('Error parsing prode_p:', e);
+        }
+      }
+
+      // Luego parseamos la cadena de productos
+      // El formato es "1x11427512300-100,2x2711800109"
+      const productos = productosStr.split(',').map(item => {
+        const [cantidad, codigoCompleto] = item.trim().split('x');
+        // Algunos códigos pueden tener un sufijo después de un espacio
+        const codigo = codigoCompleto.split(' ')[0].trim();
+        
+        // Buscar el nombre en los detalles
+        const detalle = detalles.find(d => d.codigo === codigo);
+        
+        return {
+          codigo: codigo,
+          cantidad: parseInt(cantidad.trim()),
+          nombre: detalle ? detalle.nombre : codigo // Usar el nombre del detalle si existe
+        };
+      });
+
+      return productos;
     } catch (error) {
-      console.error('Error parsing productos_detalle:', error);
+      console.error('Error parsing productos:', error);
       return [];
     }
   };
@@ -279,34 +343,27 @@ export function RepartidorView() {
     
     switch (estado) {
       case 'pendiente':
+        actions = []; // No puede hacer nada con pedidos pendientes
+        break;
       case 'surtido':
         actions = [{ 
-          action: 'aceptar', 
-          label: 'Aceptar pedido', 
-          nextStatus: 'aceptado', 
-          icon: Check,
+          action: 'recoger', 
+          label: 'Recoger pedido', 
+          nextStatus: 'recogido', 
+          icon: Truck,
           color: 'btn-primary'
         }];
         break;
-      case 'aceptado':
+      case 'recogido':
         actions = [{ 
           action: 'enruta', 
-          label: 'Salir a entregar', 
+          label: 'Salir en reparto', 
           nextStatus: 'en_ruta', 
-          icon: Truck,
-          color: 'btn-warning'
-        }];
-        break;
-      case 'en_ruta':
-        actions = [{ 
-          action: 'ubicacion', 
-          label: 'Llegué a ubicación', 
-          nextStatus: 'en_ubicacion', 
           icon: MapPin,
           color: 'btn-warning'
         }];
         break;
-      case 'en_ubicacion':
+      case 'en_ruta':
         actions = [{ 
           action: 'completar', 
           label: 'Marcar como entregado', 
@@ -319,13 +376,7 @@ export function RepartidorView() {
         actions = [];
         break;
       default:
-        actions = [{ 
-          action: 'aceptar', 
-          label: 'Aceptar pedido', 
-          nextStatus: 'aceptado', 
-          icon: Check,
-          color: 'btn-primary'
-        }];
+        actions = [];
     }
     
     return actions;
@@ -349,22 +400,41 @@ export function RepartidorView() {
   // Devuelve un objeto {codigo, nombre, cantidadTotal}
   const mochila = React.useMemo(() => {
     const productosMap: Record<string, { codigo: string; nombre: string; cantidad: number }> = {};
-    pedidos
-      .filter(p => ['en_ruta', 'en_ubicacion'].includes(p.estado))
-      .forEach(p => {
-        let productos: any[] = [];
-        if (p.productos_detalle) {
-          try {
-            productos = JSON.parse(p.productos_detalle);
-          } catch {}
+    
+    // Filtrar pedidos que están en curso (recogido, en_ruta) y no entregados
+    const pedidosEnCurso = pedidos.filter(p => 
+      ['recogido', 'en_ruta'].includes(p.sta_p) && p.sta_p !== 'entregado'
+    );
+    
+    pedidosEnCurso.forEach(p => {
+      let productos: any[] = [];
+      
+      // Usar prode_p (productos detallados) si está disponible
+      if (p.prode_p) {
+        try {
+          productos = JSON.parse(p.prode_p);
+        } catch (e) {
+          console.error('Error parsing prode_p for pedido', p.id_p, e);
         }
-        productos.forEach((prod: any) => {
-          if (!productosMap[prod.codigo]) {
-            productosMap[prod.codigo] = { codigo: prod.codigo, nombre: prod.nombre, cantidad: 0 };
-          }
-          productosMap[prod.codigo].cantidad += Number(prod.cantidad) || 0;
-        });
+      }
+      
+      // Si no hay productos detallados, parsear desde prod_p
+      if (productos.length === 0 && p.prod_p) {
+        productos = parseProductosDetalle(p.prod_p, p.prode_p);
+      }
+      
+      productos.forEach((prod: any) => {
+        if (!productosMap[prod.codigo]) {
+          productosMap[prod.codigo] = { 
+            codigo: prod.codigo, 
+            nombre: prod.nombre || prod.codigo, 
+            cantidad: 0 
+          };
+        }
+        productosMap[prod.codigo].cantidad += Number(prod.cantidad) || 0;
       });
+    });
+    
     return Object.values(productosMap);
   }, [pedidos]);
 
@@ -382,20 +452,7 @@ export function RepartidorView() {
     setLoadingRoute(true);
 
     try {
-      // Obtener datos live del repartidor
-      const repartidorLive = await fetchRepartidorLive(repartidor.id);
-      const rutaActual = repartidorLive?.ruta_actual || [];
-      
-      if (rutaActual.length < 2) {
-        toast({ 
-          title: 'Sin ruta activa', 
-          description: 'No tienes una ruta asignada en este momento',
-          variant: 'destructive'
-        });
-        return;
-      }
-
-      // Obtener la ubicación actual del dispositivo (GPS)
+      // Obtener ubicación actual del dispositivo
       const getCurrentPosition = (): Promise<GeolocationPosition> => {
         return new Promise((resolve, reject) => {
           if (!navigator.geolocation) {
@@ -420,18 +477,41 @@ export function RepartidorView() {
       const currentLat = position.coords.latitude;
       const currentLng = position.coords.longitude;
 
-      // Obtener el destino (último punto de la ruta)
-      const destination = rutaActual[rutaActual.length - 1];
+      // Obtener paradas pendientes de la ruta (filtrar las que no están entregadas)
+      const pendingStops = pedidos
+        .filter(p => p.estado !== 'entregado')
+        .map(p => ({ lat: p.latitud, lng: p.longitud }));
+
+      if (pendingStops.length === 0) {
+        toast({ 
+          title: 'Sin entregas pendientes', 
+          description: 'No tienes entregas pendientes en este momento',
+          variant: 'destructive'
+        });
+        return;
+      }
+
+      // Construir URL de Google Maps
+      // Formato: origin=start&destination=end&waypoints=punto1|punto2|punto3
+      const origin = `${currentLat},${currentLng}`;
+      const destination = `${pendingStops[pendingStops.length - 1].lat},${pendingStops[pendingStops.length - 1].lng}`;
       
-      // Generar URL de Google Maps con indicaciones desde ubicación actual
-      const googleMapsUrl = `https://www.google.com/maps/dir/?api=1&origin=${currentLat},${currentLng}&destination=${destination.lat},${destination.lng}&travelmode=driving`;
+      // Si hay paradas intermedias, agregarlas como waypoints
+      let waypointsStr = '';
+      if (pendingStops.length > 2) {
+        // Excluir el último punto (es el destino)
+        const waypoints = pendingStops.slice(0, -1);
+        waypointsStr = `&waypoints=${waypoints.map(wp => `${wp.lat},${wp.lng}`).join('|')}`;
+      }
+
+      const googleMapsUrl = `https://www.google.com/maps/dir/?api=1&origin=${origin}&destination=${destination}${waypointsStr}&travelmode=driving`;
 
       // Abrir en nueva pestaña
       window.open(googleMapsUrl, '_blank');
       
       toast({ 
         title: '✅ Ruta abierta', 
-        description: 'Google Maps abierto con indicaciones desde tu ubicación actual',
+        description: `Ruta con ${pendingStops.length} paradas cargada en Google Maps`,
         duration: 2000
       });
     } catch (error) {
@@ -478,10 +558,10 @@ export function RepartidorView() {
           >
             <Truck className="w-5 h-5" />
             <span className="font-medium">Entregas</span>
-            {pedidos.filter(p => ['en_ruta', 'en_ubicacion'].includes(p.estado)).length > 0 && (
-              <span className="ml-2 px-2 py-0.5 text-xs font-bold bg-yellow-400/20 text-yellow-400 rounded-full">
-                {pedidos.filter(p => ['en_ruta', 'en_ubicacion'].includes(p.estado)).length}
-              </span>
+            {pedidos.filter(p => ['en_ruta'].includes(p.estado)).length > 0 && (
+              <div className="absolute -top-2 -right-2 w-6 h-6 bg-red-500 text-white text-xs rounded-full flex items-center justify-center font-bold">
+                {pedidos.filter(p => ['en_ruta'].includes(p.estado)).length}
+              </div>
             )}
           </TabsTrigger>
           <TabsTrigger 
@@ -497,14 +577,14 @@ export function RepartidorView() {
             )}
           </TabsTrigger>
         </TabsList>
-        <TabsContent value="entregas">
-          <div className="mobile-section">
+        <TabsContent value="entregas" className="w-full max-w-3xl mx-auto">
+          <div className="mobile-section w-full">
             {/* Page Header */}
-            <div className="mobile-section">
-              <div className="flex items-center justify-between mb-4">
-                <div>
+            <div className="mobile-section w-full">
+              <div className="flex items-center justify-between mb-4 w-full">
+                <div className="flex-1 min-w-0 mr-4">
                   <h2 className="text-2xl font-bold text-gradient">Mis Entregas</h2>
-                  <p className="text-muted">
+                  <p className="text-muted truncate">
                     {repartidor ? `${repartidor.nombre} - ${repartidor.tipo_vehiculo}` : 'Pedidos asignados para hoy'}
                   </p>
                 </div>
@@ -512,7 +592,7 @@ export function RepartidorView() {
                 <Button
                   onClick={openGoogleMapsRoute}
                   disabled={loadingRoute}
-                  className="bg-gradient-to-r from-yellow-400 to-yellow-500 hover:from-yellow-500 hover:to-yellow-600 text-black font-semibold px-4 py-2 rounded-lg flex items-center gap-2 transition-all duration-300 shadow-lg hover:shadow-yellow-400/25 disabled:opacity-75 disabled:cursor-not-allowed"
+                  className="bg-gradient-to-r from-yellow-400 to-yellow-500 hover:from-yellow-500 hover:to-yellow-600 text-black font-semibold px-4 py-2 rounded-lg flex items-center gap-2 transition-all duration-300 shadow-lg hover:shadow-yellow-400/25 disabled:opacity-75 disabled:cursor-not-allowed whitespace-nowrap"
                 >
                   {loadingRoute ? (
                     <>
@@ -547,7 +627,7 @@ export function RepartidorView() {
             </div>
 
             {/* Stats Banner */}
-            <div className="mobile-section bg-gradient-radial">
+            <div className="mobile-section bg-gradient-radial w-full">
               <div className="grid grid-cols-4 gap-3">
                 <div className="card-minimal p-3 text-center">
                   <div className="text-2xl font-bold text-yellow-400">
@@ -557,7 +637,7 @@ export function RepartidorView() {
                 </div>
                 <div className="card-minimal p-3 text-center">
                   <div className="text-2xl font-bold text-orange-400">
-                    {pedidos.filter(p => ['en_ruta', 'en_ubicacion'].includes(p.estado)).length}
+                    {pedidos.filter(p => ['en_ruta'].includes(p.estado)).length}
                   </div>
                   <div className="text-xs text-muted">En proceso</div>
                 </div>
@@ -575,7 +655,7 @@ export function RepartidorView() {
             </div>
 
             {/* Delivery List */}
-            <div className="mobile-content space-y-4 px-4">
+            <div className="mobile-content space-y-4 w-full">
               {loading ? (
                 <div className="flex flex-col items-center justify-center py-12">
                   <div className="loading-spinner mb-4"></div>
@@ -599,259 +679,256 @@ export function RepartidorView() {
                     
                     if (pedidosPendientes.length > 0) {
                       return (
-                        <div className="space-y-4">
-                          <div className="flex items-center justify-between">
+                        <div className="space-y-4 w-full">
+                          <div className="flex items-center justify-between w-full">
                             <h3 className="text-lg font-semibold text-white flex items-center gap-2">
                               <Truck className="w-5 h-5 text-yellow-400" />
                               Próximas entregas ({pedidosPendientes.length})
                             </h3>
                           </div>
                           
-                          {pedidosPendientes.map((pedido: any, idx: number) => {
-                            const availableActions = getAvailableActions(pedido.estado);
-                            const isUpdating = updatingPedido === String(pedido.id);
-                            
-                            return (
-                              <div 
-                                key={`${pedido.id}-${updatingPedido}`}
-                                className={`card-modern p-4 cursor-pointer transition-all duration-300 ${
-                                  selected === idx ? 'border-yellow-400/60 bg-yellow-400/5' : ''
-                                } ${isUpdating ? 'border-orange-400/60 bg-orange-400/5' : ''}`}
-                                onClick={() => !isUpdating && setSelected(selected === idx ? null : idx)}
-                              >
-                                {/* Status updating indicator */}
-                                {isUpdating && (
-                                  <div className="mb-3 flex items-center space-x-2 text-orange-400 text-sm">
-                                    <div className="w-3 h-3 border border-orange-400 border-t-transparent rounded-full animate-spin" />
-                                    <span>Actualizando estado...</span>
-                                  </div>
-                                )}
-
-                                {/* Card Header */}
-                                <div className="flex items-start justify-between mb-3">
-                                  <div className="flex items-center space-x-3 flex-1 min-w-0">
-                                    <div className="w-12 h-12 bg-gradient-to-br from-yellow-400 to-yellow-500 rounded-xl flex items-center justify-center flex-shrink-0">
-                                      <Truck className="w-6 h-6 text-black" />
-                                    </div>
-                                    <div className="flex-1 min-w-0">
-                                      <h3 className="font-semibold text-white text-lg truncate">Pedido #{pedido.id}</h3>
-                                      <div className="flex items-center space-x-2 mt-1 min-w-0">
-                                        <MapPin className="w-4 h-4 text-yellow-400 flex-shrink-0" />
-                                        <p className="text-sm text-muted truncate">{pedido.direccion}</p>
+                          <div className="space-y-4 w-full">
+                            {pedidosPendientes.map((pedido: any, idx: number) => {
+                              const availableActions = getAvailableActions(pedido.estado);
+                              const isUpdating = updatingPedido === String(pedido.id);
+                              
+                              return (
+                                <div 
+                                  key={`${pedido.id}-${updatingPedido}`}
+                                  className={`card-modern p-4 cursor-pointer transition-all duration-300 w-full ${
+                                    selected === idx ? 'border-yellow-400/60 bg-yellow-400/5' : ''
+                                  } ${isUpdating ? 'border-orange-400/60 bg-orange-400/5' : ''}`}
+                                  onClick={() => !isUpdating && setSelected(selected === idx ? null : idx)}
+                                >
+                                  {/* Card Header */}
+                                  <div className="flex items-start justify-between mb-3 w-full">
+                                    <div className="flex items-center space-x-3 flex-1 min-w-0">
+                                      <div className="w-12 h-12 bg-gradient-to-br from-yellow-400 to-yellow-500 rounded-xl flex items-center justify-center flex-shrink-0">
+                                        <Truck className="w-6 h-6 text-black" />
+                                      </div>
+                                      <div className="flex-1 min-w-0">
+                                        <h3 className="font-semibold text-white text-lg">Pedido #{pedido.id}</h3>
+                                        <div className="flex items-center space-x-2 mt-1 min-w-0">
+                                          <MapPin className="w-4 h-4 text-yellow-400 flex-shrink-0" />
+                                          <p className="text-sm text-muted truncate">{pedido.direccion}</p>
+                                        </div>
                                       </div>
                                     </div>
-                                  </div>
-                                  
-                                  <div className="flex items-center space-x-2 flex-shrink-0 min-w-[140px]">
-                                    <div className={`status-indicator ${getStatusColor(pedido.estado)} ${isUpdating ? 'animate-pulse' : ''} text-xs whitespace-nowrap`}>
-                                      {getStatusText(pedido.estado)}
-                                    </div>
-                                    <DropdownMenu>
-                                      <DropdownMenuTrigger asChild>
-                                        <button 
-                                          className="flex items-center justify-center w-8 h-8 rounded-lg bg-zinc-800 border border-zinc-700 hover:border-yellow-400/50 hover:bg-yellow-400/10 transition-colors text-gray-400 hover:text-yellow-400 flex-shrink-0" 
-                                          disabled={isUpdating}
-                                        >
-                                          <MoreVertical className="w-4 h-4" />
-                                        </button>
-                                      </DropdownMenuTrigger>
-                                      <DropdownMenuContent align="end" className="bg-zinc-900 border-yellow-400/30">
-                                        <DropdownMenuItem className="text-white hover:bg-yellow-400/10">Ver detalles</DropdownMenuItem>
-                                        <DropdownMenuItem className="text-white hover:bg-yellow-400/10">Reportar incidencia</DropdownMenuItem>
-                                        <DropdownMenuItem className="text-white hover:bg-yellow-400/10">Contactar cliente</DropdownMenuItem>
-                                      </DropdownMenuContent>
-                                    </DropdownMenu>
-                                  </div>
-                                </div>
-
-                                {/* Card Content */}
-                                <div className="space-y-3">
-                                  <div className="flex items-center justify-between text-sm">
-                                    <div className="flex items-center space-x-2">
-                                      <Home className="w-4 h-4 text-blue-400" />
-                                      <span className="text-muted">Sucursal:</span>
-                                      <span className="text-white font-medium">{pedido.sucursal_asignada}</span>
-                                    </div>
-                                    <div className="flex items-center space-x-2">
-                                      <Clock className="w-4 h-4 text-green-400" />
-                                      <span className="text-white font-medium">
-                                        {calculateETA(parseFloat(pedido.latitud), parseFloat(pedido.longitud))}
-                                      </span>
+                                    
+                                    <div className="flex items-center space-x-2 flex-shrink-0">
+                                      <div className={`status-indicator ${getStatusColor(pedido.estado)} ${isUpdating ? 'animate-pulse' : ''} text-xs whitespace-nowrap`}>
+                                        {getStatusText(pedido.estado)}
+                                      </div>
+                                      <DropdownMenu>
+                                        <DropdownMenuTrigger asChild>
+                                          <button 
+                                            className="flex items-center justify-center w-8 h-8 rounded-lg bg-zinc-800 border border-zinc-700 hover:border-yellow-400/50 hover:bg-yellow-400/10 transition-colors text-gray-400 hover:text-yellow-400 flex-shrink-0" 
+                                            disabled={isUpdating}
+                                          >
+                                            <MoreVertical className="w-4 h-4" />
+                                          </button>
+                                        </DropdownMenuTrigger>
+                                        <DropdownMenuContent align="end" className="bg-zinc-900 border-yellow-400/30">
+                                          <DropdownMenuItem className="text-white hover:bg-yellow-400/10">Ver detalles</DropdownMenuItem>
+                                          <DropdownMenuItem className="text-white hover:bg-yellow-400/10">Reportar incidencia</DropdownMenuItem>
+                                          <DropdownMenuItem className="text-white hover:bg-yellow-400/10">Contactar cliente</DropdownMenuItem>
+                                          <DropdownMenuItem onClick={() => handleOpenGoogleMaps(pedido)}>
+                                            <ExternalLink className="mr-2 h-4 w-4" />
+                                            Ver en Google Maps
+                                          </DropdownMenuItem>
+                                        </DropdownMenuContent>
+                                      </DropdownMenu>
                                     </div>
                                   </div>
 
-                                  {/* Products Section */}
-                                  <div className="text-sm">
-                                    <div className="flex items-center justify-between mb-2">
+                                  {/* Card Content */}
+                                  <div className="space-y-3">
+                                    <div className="flex items-center justify-between text-sm">
                                       <div className="flex items-center space-x-2">
-                                        <Package className="w-4 h-4 text-purple-400" />
-                                        <span className="text-muted">Productos:</span>
-                                        {!pedido.productos_detalle && (
-                                          <span className="text-white">{pedido.productos}</span>
+                                        <Home className="w-4 h-4 text-blue-400" />
+                                        <span className="text-muted">Sucursal:</span>
+                                        <span className="text-white font-medium">{pedido.sucursal_asignada}</span>
+                                      </div>
+                                      <div className="flex items-center space-x-2">
+                                        <Clock className="w-4 h-4 text-green-400" />
+                                        <span className="text-white font-medium">
+                                          {calculateETA(parseFloat(pedido.latitud), parseFloat(pedido.longitud))}
+                                        </span>
+                                      </div>
+                                    </div>
+
+                                    {/* Products Section */}
+                                    <div className="text-sm">
+                                      <div className="flex items-center justify-between mb-2">
+                                        <div className="flex items-center space-x-2">
+                                          <Package className="w-4 h-4 text-purple-400" />
+                                          {!pedido.productos_detalle && (
+                                            <span className="text-white">{pedido.productos}</span>
+                                          )}
+                                        </div>
+                                        
+                                        {pedido.productos_detalle && (
+                                          <button 
+                                            className="btn-ghost text-xs px-2 py-1 text-yellow-400 hover:bg-yellow-400/10 border border-yellow-400/30 rounded"
+                                            onClick={(e) => {
+                                              e.stopPropagation();
+                                              toggleProductDetails(String(pedido.id));
+                                            }}
+                                          >
+                                            {showProductDetails[String(pedido.id)] ? 'Ocultar detalles' : 'Ver detalles'}
+                                          </button>
                                         )}
                                       </div>
                                       
-                                      {pedido.productos_detalle && (
-                                        <button 
-                                          className="btn-ghost text-xs px-2 py-1 text-yellow-400 hover:bg-yellow-400/10 border border-yellow-400/30 rounded"
-                                          onClick={(e) => {
-                                            e.stopPropagation();
-                                            toggleProductDetails(String(pedido.id));
-                                          }}
-                                        >
-                                          {showProductDetails[String(pedido.id)] ? 'Ocultar detalles' : 'Ver detalles'}
-                                        </button>
-                                      )}
-                                    </div>
-                                    
-                                    {/* Detailed Products Table - Only shown when button is clicked */}
-                                    {showProductDetails[String(pedido.id)] && pedido.productos_detalle && (
-                                      <div className="bg-zinc-800 rounded-lg overflow-hidden mt-3 animate-slide-up">
-                                        <table className="w-full text-xs">
-                                          <thead>
-                                            <tr className="bg-yellow-400/20 text-yellow-400">
-                                              <th className="text-left p-2 font-medium">Código</th>
-                                              <th className="text-left p-2 font-medium">Producto</th>
-                                              <th className="text-right p-2 font-medium">Cant.</th>
-                                            </tr>
-                                          </thead>
-                                          <tbody>
-                                            {parseProductosDetalle(pedido.productos_detalle).map((producto: any, prodIdx: number) => (
-                                              <tr key={prodIdx} className="border-t border-zinc-700">
-                                                <td className="p-2 text-yellow-300 font-mono text-xs">{producto.codigo}</td>
-                                                <td className="p-2 text-white text-xs leading-tight">{producto.nombre}</td>
-                                                <td className="p-2 text-right text-yellow-400 font-bold">{producto.cantidad}</td>
+                                      {/* Detailed Products Table - Only shown when button is clicked */}
+                                      {showProductDetails[String(pedido.id)] && pedido.prod_p && (
+                                        <div className="bg-zinc-800 rounded-lg overflow-hidden mt-3 animate-slide-up">
+                                          <table className="w-full text-xs">
+                                            <thead>
+                                              <tr className="bg-yellow-400/20 text-yellow-400">
+                                                <th className="text-left p-2 font-medium">Código</th>
+                                                <th className="text-left p-2 font-medium">Producto</th>
+                                                <th className="text-right p-2 font-medium">Cant.</th>
                                               </tr>
-                                            ))}
-                                          </tbody>
-                                        </table>
-                                      </div>
-                                    )}
-                                  </div>
-
-                                  {/* Progress Bar */}
-                                  <div className="w-full bg-zinc-800 rounded-full h-2">
-                                    <div 
-                                      className="bg-gradient-to-r from-yellow-400 to-yellow-500 h-2 rounded-full transition-all duration-300"
-                                      style={{ 
-                                        width: 
-                                          pedido.estado === 'entregado' ? '100%' : 
-                                          pedido.estado === 'en_ubicacion' ? '85%' :
-                                          pedido.estado === 'en_ruta' ? '70%' : 
-                                          pedido.estado === 'aceptado' ? '50%' :
-                                          pedido.estado === 'surtido' ? '30%' : '15%'
-                                      }}
-                                    ></div>
-                                  </div>
-                                </div>
-
-                                {/* Expanded Content */}
-                                {selected === idx && (
-                                  <div className="mt-4 pt-4 border-t border-yellow-400/20 animate-slide-up">
-                                    {/* Action Buttons */}
-                                    <div className="space-y-3">
-                                      {/* Copy coordinates button - always available */}
-                                      <button 
-                                        className="btn-secondary w-full"
-                                        onClick={(e) => {
-                                          e.stopPropagation();
-                                          handleCopyCoordinates(pedido);
-                                        }}
-                                      >
-                                        <Copy className="w-4 h-4" />
-                                        Copiar coordenadas
-                                      </button>
-
-                                      {/* Workflow action buttons */}
-                                      {availableActions.map((actionItem, actionIdx) => {
-                                        const IconComponent = actionItem.icon;
-                                        const isUpdating = updatingPedido === String(pedido.id);
-                                        // Si la acción es 'completar' (marcar como entregado), mostrar input de evidencia
-                                        const requiereEvidencia = actionItem.action === 'completar';
-                                        return (
-                                          <div key={actionIdx} className="space-y-2">
-                                            {requiereEvidencia && (
-                                              <div className="mb-2" onClick={e => e.stopPropagation()}>
-                                                <label className="block text-sm font-medium text-yellow-400 mb-1" onClick={e => e.stopPropagation()}>
-                                                  Toma una foto de evidencia de entrega
-                                                </label>
-                                                <button
-                                                  type="button"
-                                                  className="btn-warning w-full mb-2"
-                                                  disabled={isUpdating}
-                                                  onClick={e => {
-                                                    e.stopPropagation();
-                                                    document.getElementById(`evidencia-input-${pedido.id}`)?.click();
-                                                  }}
-                                                >
-                                                  Tomar foto
-                                                </button>
-                                                <input
-                                                  id={`evidencia-input-${pedido.id}`}
-                                                  type="file"
-                                                  accept="image/*"
-                                                  capture="environment"
-                                                  disabled={isUpdating}
-                                                  style={{ display: 'none' }}
-                                                  onClick={e => e.stopPropagation()}
-                                                  onChange={e => {
-                                                    const file = e.target.files && e.target.files[0] ? e.target.files[0] : null;
-                                                    handleEvidenciaChange(String(pedido.id), file);
-                                                  }}
-                                                />
-                                                {evidenciaPreview[String(pedido.id)] && (
-                                                  <img
-                                                    src={evidenciaPreview[String(pedido.id)]}
-                                                    alt="Evidencia"
-                                                    className="mt-2 rounded-lg max-h-40 border border-yellow-400"
-                                                  />
-                                                )}
-                                              </div>
-                                            )}
-                                            <button
-                                              className={`${actionItem.color} w-full ${isUpdating ? 'opacity-75 cursor-not-allowed' : ''}`}
-                                              disabled={isUpdating || (requiereEvidencia && !evidencia[String(pedido.id)])}
-                                              onClick={e => {
-                                                e.stopPropagation();
-                                                if (!isUpdating) {
-                                                  // Aquí se podría enviar la imagen al backend si se implementa
-                                                  handleUpdatePedidoStatus(pedido.id, actionItem.nextStatus, actionItem.label);
-                                                }
-                                              }}
-                                            >
-                                              {isUpdating ? (
-                                                <>
-                                                  <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                                                  Actualizando...
-                                                </>
-                                              ) : (
-                                                <>
-                                                  <IconComponent className="w-4 h-4" />
-                                                  {actionItem.label}
-                                                </>
-                                              )}
-                                            </button>
-                                          </div>
-                                        );
-                                      })}
-
-                                      {/* Completed state message */}
-                                      {pedido.estado === 'entregado' && (
-                                        <div className="bg-green-900/20 border border-green-500/30 rounded-lg p-3 text-center">
-                                          <Check className="w-6 h-6 text-green-400 mx-auto mb-2" />
-                                          <p className="text-green-400 font-medium">Pedido entregado exitosamente</p>
-                                          <p className="text-green-300 text-sm">¡Excelente trabajo!</p>
+                                            </thead>
+                                            <tbody>
+                                              {parseProductosDetalle(pedido.prod_p, pedido.prode_p).map((producto: any, prodIdx: number) => (
+                                                <tr key={prodIdx} className="border-t border-zinc-700">
+                                                  <td className="p-2 text-yellow-300 font-mono text-xs">{producto.codigo}</td>
+                                                  <td className="p-2 text-white text-xs leading-tight">{producto.nombre}</td>
+                                                  <td className="p-2 text-right text-yellow-400 font-bold">{producto.cantidad}</td>
+                                                </tr>
+                                              ))}
+                                            </tbody>
+                                          </table>
                                         </div>
                                       )}
                                     </div>
+
+                                    {/* Progress Bar */}
+                                    <div className="w-full bg-zinc-800 rounded-full h-2">
+                                      <div 
+                                        className="bg-gradient-to-r from-yellow-400 to-yellow-500 h-2 rounded-full transition-all duration-300"
+                                        style={{ 
+                                          width: 
+                                            pedido.estado === 'entregado' ? '100%' : 
+                                            pedido.estado === 'en_ruta' ? '80%' : 
+                                            pedido.estado === 'recogido' ? '60%' :
+                                            pedido.estado === 'surtido' ? '40%' : '20%'
+                                        }}
+                                      ></div>
+                                    </div>
                                   </div>
-                                )}
-                              </div>
-                            );
-                          })}
+
+                                  {/* Expanded Content */}
+                                  {selected === idx && (
+                                    <div className="mt-4 pt-4 border-t border-yellow-400/20 animate-slide-up">
+                                      {/* Action Buttons */}
+                                      <div className="space-y-3">
+                                        {/* Ver en Google Maps button - always available */}
+                                        <button 
+                                          className="btn-secondary w-full"
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            handleOpenGoogleMaps(pedido);
+                                          }}
+                                        >
+                                          <ExternalLink className="w-4 h-4" />
+                                          Ver en Google Maps
+                                        </button>
+
+                                        {/* Workflow action buttons */}
+                                        {availableActions.map((actionItem, actionIdx) => {
+                                          const IconComponent = actionItem.icon;
+                                          const isUpdating = updatingPedido === String(pedido.id);
+                                          // Si la acción es 'completar' (marcar como entregado), mostrar input de evidencia
+                                          const requiereEvidencia = actionItem.action === 'completar';
+                                          return (
+                                            <div key={actionIdx} className="space-y-2">
+                                              {requiereEvidencia && (
+                                                <div className="mb-2" onClick={e => e.stopPropagation()}>
+                                                  <label className="block text-sm font-medium text-yellow-400 mb-1" onClick={e => e.stopPropagation()}>
+                                                    Toma una foto de evidencia de entrega
+                                                  </label>
+                                                  <button
+                                                    type="button"
+                                                    className="btn-warning w-full mb-2"
+                                                    disabled={isUpdating}
+                                                    onClick={e => {
+                                                      e.stopPropagation();
+                                                      document.getElementById(`evidencia-input-${pedido.id}`)?.click();
+                                                    }}
+                                                  >
+                                                    Tomar foto
+                                                  </button>
+                                                  <input
+                                                    id={`evidencia-input-${pedido.id}`}
+                                                    type="file"
+                                                    accept="image/*"
+                                                    capture="environment"
+                                                    disabled={isUpdating}
+                                                    style={{ display: 'none' }}
+                                                    onClick={e => e.stopPropagation()}
+                                                    onChange={e => {
+                                                      const file = e.target.files && e.target.files[0] ? e.target.files[0] : null;
+                                                      handleEvidenciaChange(String(pedido.id), file);
+                                                    }}
+                                                  />
+                                                  {evidenciaPreview[String(pedido.id)] && (
+                                                    <img
+                                                      src={evidenciaPreview[String(pedido.id)]}
+                                                      alt="Evidencia"
+                                                      className="mt-2 rounded-lg max-h-40 border border-yellow-400"
+                                                    />
+                                                  )}
+                                                </div>
+                                              )}
+                                              <button
+                                                className={`${actionItem.color} w-full ${isUpdating ? 'opacity-75 cursor-not-allowed' : ''}`}
+                                                disabled={isUpdating || (requiereEvidencia && !evidencia[String(pedido.id)])}
+                                                onClick={e => {
+                                                  e.stopPropagation();
+                                                  if (!isUpdating) {
+                                                    // Aquí se podría enviar la imagen al backend si se implementa
+                                                    handleUpdatePedidoStatus(pedido.id, actionItem.nextStatus, actionItem.label);
+                                                  }
+                                                }}
+                                              >
+                                                {isUpdating ? (
+                                                  <>
+                                                    <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                                                    Actualizando...
+                                                  </>
+                                                ) : (
+                                                  <>
+                                                    <IconComponent className="w-4 h-4" />
+                                                    {actionItem.label}
+                                                  </>
+                                                )}
+                                              </button>
+                                            </div>
+                                          );
+                                        })}
+
+                                        {/* Completed state message */}
+                                        {pedido.estado === 'entregado' && (
+                                          <div className="bg-green-900/20 border border-green-500/30 rounded-lg p-3 text-center">
+                                            <Check className="w-6 h-6 text-green-400 mx-auto mb-2" />
+                                            <p className="text-green-400 font-medium">Pedido entregado exitosamente</p>
+                                            <p className="text-green-300 text-sm">¡Excelente trabajo!</p>
+                                          </div>
+                                        )}
+                                      </div>
+                                    </div>
+                                  )}
+                                </div>
+                              );
+                            })}
+                          </div>
                         </div>
                       );
                     }
+                    return null;
                   })()}
 
                   {/* PEDIDOS ENTREGADOS - Abajo */}
@@ -979,27 +1056,35 @@ export function RepartidorView() {
                   </h3>
                   <div className="space-y-3">
                     {pedidos
-                      .filter(p => ['en_ruta', 'en_ubicacion'].includes(p.estado))
+                      .filter(p => ['recogido', 'en_ruta'].includes(p.sta_p) && p.sta_p !== 'entregado')
                       .map((pedido) => {
-                        const productosPedido = (() => {
+                        let productosPedido: any[] = [];
+                        
+                        // Usar prode_p (productos detallados) si está disponible
+                        if (pedido.prode_p) {
                           try {
-                            return JSON.parse(pedido.productos_detalle || '[]');
-                          } catch {
-                            return [];
+                            productosPedido = JSON.parse(pedido.prode_p);
+                          } catch (e) {
+                            console.error('Error parsing prode_p for pedido', pedido.id_p, e);
                           }
-                        })();
+                        }
+                        
+                        // Si no hay productos detallados, parsear desde prod_p
+                        if (productosPedido.length === 0 && pedido.prod_p) {
+                          productosPedido = parseProductosDetalle(pedido.prod_p, pedido.prode_p);
+                        }
 
                         return (
-                          <div key={pedido.id} className="bg-zinc-900 rounded-lg overflow-hidden border border-zinc-800">
+                          <div key={pedido.id_p} className="bg-zinc-900 rounded-lg overflow-hidden border border-zinc-800">
                             <div className="p-3 bg-gradient-to-r from-zinc-800 to-zinc-900 flex items-center justify-between">
                               <div className="flex items-center gap-2">
-                                <span className="text-sm font-medium text-white">Pedido #{pedido.id}</span>
+                                <span className="text-sm font-medium text-white">Pedido #{pedido.id_p}</span>
                                 <span className={`px-2 py-0.5 text-xs font-medium rounded-full ${
-                                  pedido.estado === 'en_ruta' 
+                                  pedido.sta_p === 'en_ruta' 
                                     ? 'bg-yellow-400/20 text-yellow-400' 
                                     : 'bg-blue-400/20 text-blue-400'
                                 }`}>
-                                  {pedido.estado === 'en_ruta' ? 'En ruta' : 'En ubicación'}
+                                  {pedido.sta_p === 'en_ruta' ? 'En ruta' : 'Recogido'}
                                 </span>
                               </div>
                               <span className="text-xs text-muted">
@@ -1012,7 +1097,7 @@ export function RepartidorView() {
                                   {productosPedido.map((prod: { codigo: string; nombre: string; cantidad: string | number }, idx: number) => (
                                     <tr key={prod.codigo} className={`${idx !== productosPedido.length - 1 ? 'border-b border-zinc-800' : ''}`}>
                                       <td className="py-2 text-xs font-mono text-yellow-300">{prod.codigo}</td>
-                                      <td className="py-2 text-sm text-white">{prod.nombre}</td>
+                                      <td className="py-2 text-sm text-white">{prod.nombre || prod.codigo}</td>
                                       <td className="py-2 text-right font-bold text-yellow-400">{prod.cantidad}</td>
                                     </tr>
                                   ))}

@@ -1,8 +1,7 @@
 import { useEffect, useState, useRef } from 'react';
 import { useToast } from '@/hooks/use-toast';
 import { GoogleMapsContainer, GoogleMapsHandle } from './google-maps-container';
-import { fetchAllRepartidoresLive } from '@/lib/utils';
-import { googleRoutesService, createRouteFromRutaActual } from '@/lib/google-routes';
+import { fetchRepartidoresLive } from '@/lib/utils';
 
 // Definir tipo para la instancia de Google Maps
 declare global {
@@ -47,8 +46,6 @@ export function DashboardRealTimeMap() {
   const [loading, setLoading] = useState(false);
   const [lastUpdate, setLastUpdate] = useState<string>('Nunca');
   const [selectedRepartidor, setSelectedRepartidor] = useState<number | null>(null);
-  const [showRoutes, setShowRoutes] = useState(true);
-  const [loadingRoutes, setLoadingRoutes] = useState(false);
   
   const mapRef = useRef<GoogleMapsHandle>(null);
   const mapInstanceRef = useRef<google.maps.Map | null>(null);
@@ -56,8 +53,8 @@ export function DashboardRealTimeMap() {
   const { toast } = useToast();
   const intervalRef = useRef<NodeJS.Timeout | null>(null);
 
-  // Función para obtener color según el estado
-  const getStatusColor = (status: string): string => {
+  // Función para obtener color según el estado (para marcadores de repartidores)
+  const getRepartidorStatusColor = (status: string): string => {
     switch (status) {
       case 'en_ruta': return '#f59e0b';
       case 'entregando': return '#10b981';
@@ -68,8 +65,8 @@ export function DashboardRealTimeMap() {
     }
   };
 
-  // Función para obtener texto descriptivo del estado
-  const getStatusText = (status: string): string => {
+  // Función para obtener texto descriptivo del estado (para repartidores)
+  const getRepartidorStatusText = (status: string): string => {
     switch (status) {
       case 'en_ruta': return 'En ruta';
       case 'entregando': return 'Entregando';
@@ -131,7 +128,7 @@ export function DashboardRealTimeMap() {
     }
   };
 
-  // Función para cargar datos de tracking en tiempo real
+  // Función para cargar datos de tracking en tiempo real (SOLO UBICACIONES ACTUALES)
   const loadTrackingData = async () => {
     if (!mapInstanceRef.current) {
       console.error('❌ Mapa no disponible');
@@ -140,28 +137,25 @@ export function DashboardRealTimeMap() {
 
     try {
       console.log('📍 Cargando datos de tracking para dashboard...');
-      const repartidoresLive = await fetchAllRepartidoresLive();
+      // USAR LA MISMA FUNCIÓN QUE EL GPS TRACKING
+      const repartidoresLive = await fetchRepartidoresLive();
       
       const trackingData = repartidoresLive.map((r: any) => ({
-        repartidorId: Number(r.id),
+        repartidorId: Number(r.repartidorId),
         nombre: r.nombre,
         tipo_vehiculo: r.tipo_vehiculo,
         location: {
-          lat: r.ubicacion_actual.lat,
-          lng: r.ubicacion_actual.lng,
-          lastUpdate: r.ubicacion_actual.timestamp,
-          status: r.ubicacion_actual.status,
-          speed: r.ubicacion_actual.speed || 0
+          lat: r.location.lat,
+          lng: r.location.lng,
+          lastUpdate: r.location.lastUpdate,
+          status: r.location.status,
+          speed: r.location.speed || 0
         },
-        isOnline: true
+        isOnline: r.isOnline
       }));
       
       setTrackingData(trackingData);
       updateMapMarkers(trackingData);
-      
-      if (showRoutes) {
-        loadRoutesForRepartidores(repartidoresLive);
-      }
       
       setLastUpdate(new Date().toLocaleTimeString());
       console.log(`✅ ${trackingData.length} repartidores actualizados en el dashboard`);
@@ -171,7 +165,7 @@ export function DashboardRealTimeMap() {
     }
   };
 
-  // Función para actualizar marcadores en el mapa
+  // Función para actualizar marcadores en el mapa (SOLO UBICACIONES ACTUALES)
   const updateMapMarkers = (data: RepartidorTracking[]) => {
     if (!mapInstanceRef.current || !(window as any).google) {
       console.log('⚠️ Mapa no disponible para marcadores');
@@ -186,7 +180,7 @@ export function DashboardRealTimeMap() {
     });
     markersRef.current.clear();
 
-    // Agregar nuevos marcadores
+    // Agregar nuevos marcadores (SOLO UBICACIONES ACTUALES)
     data.forEach(repartidor => {
       if (!repartidor.isOnline) return;
 
@@ -200,7 +194,7 @@ export function DashboardRealTimeMap() {
         icon: {
           path: (window as any).google.maps.SymbolPath.CIRCLE,
           scale: 8,
-          fillColor: getStatusColor(repartidor.location.status),
+          fillColor: getRepartidorStatusColor(repartidor.location.status),
           fillOpacity: 1,
           strokeColor: '#ffffff',
           strokeWeight: 2
@@ -218,8 +212,8 @@ export function DashboardRealTimeMap() {
             </div>
             <div style="margin-bottom: 4px; font-size: 12px;">
               <strong>📍</strong> 
-              <span style="color: ${getStatusColor(repartidor.location.status)}; font-weight: bold;">
-                ${getStatusText(repartidor.location.status)}
+              <span style="color: ${getRepartidorStatusColor(repartidor.location.status)}; font-weight: bold;">
+                ${getRepartidorStatusText(repartidor.location.status)}
               </span>
             </div>
             <div style="font-size: 11px; color: #6b7280;">
@@ -244,38 +238,6 @@ export function DashboardRealTimeMap() {
       marker.infoWindow = infoWindow;
       markersRef.current.set(repartidor.repartidorId, marker);
     });
-  };
-
-  // Función para cargar rutas de repartidores
-  const loadRoutesForRepartidores = async (repartidores: any[]) => {
-    if (!showRoutes || !mapInstanceRef.current) {
-      return;
-    }
-
-    setLoadingRoutes(true);
-    try {
-      const routesPromises = repartidores.map(async (repartidor: any) => {
-        try {
-          if (repartidor.ruta_actual && repartidor.ruta_actual.length > 1) {
-            await createRouteFromRutaActual(
-              repartidor.id,
-              repartidor.nombre,
-              repartidor.ruta_actual,
-              mapInstanceRef.current
-            );
-          }
-        } catch (error) {
-          console.error(`❌ Error creando ruta para ${repartidor.nombre}:`, error);
-        }
-      });
-      
-      await Promise.all(routesPromises);
-      console.log('✅ Rutas cargadas en el dashboard');
-    } catch (error) {
-      console.error('❌ Error cargando rutas:', error);
-    } finally {
-      setLoadingRoutes(false);
-    }
   };
 
   // Función para centrar el mapa en un repartidor
@@ -373,7 +335,7 @@ export function DashboardRealTimeMap() {
         <GoogleMapsContainer ref={mapRef} onMapReady={handleMapReady} className="w-full h-full" />
       </div>
 
-      {/* Panel de repartidores debajo del mapa */}
+      {/* Panel de repartidores debajo del mapa (SOLO NOMBRES) */}
       <div className="h-48 bg-zinc-900 border-t border-zinc-800 overflow-y-auto rounded-xl">
         <div className="p-4">
           <div className="bg-zinc-900 border-yellow-400/20 rounded-lg">
@@ -412,26 +374,18 @@ export function DashboardRealTimeMap() {
                       }}
                     >
                       {/* Badge de estado arriba a la derecha */}
-                      <span className={`absolute top-2 right-2 text-xs px-2 py-0.5 rounded font-semibold tracking-wide shadow ${
-                        repartidor.location.status === 'en_ruta' ? 'bg-yellow-400/80 text-zinc-900' :
-                        repartidor.location.status === 'entregando' ? 'bg-green-400/80 text-zinc-900' :
-                        repartidor.location.status === 'disponible' ? 'bg-blue-400/80 text-zinc-900' :
-                        repartidor.location.status === 'regresando' ? 'bg-purple-400/80 text-zinc-900' :
-                        repartidor.location.status === 'descanso' ? 'bg-red-400/80 text-zinc-900' :
-                        'bg-zinc-700 text-zinc-100'
-                      }`}>
-                        {getStatusText(repartidor.location.status)}
-                      </span>
-                      <div className="flex items-center space-x-2 mb-2">
-                        <svg className="w-4 h-4 text-yellow-400" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M9 17v-6a2 2 0 012-2h2a2 2 0 012 2v6m-6 0h6" /></svg>
-                        <span className="font-semibold text-white truncate text-base">{repartidor.nombre}</span>
-                        <div className={`w-2 h-2 rounded-full ml-1 ${repartidor.isOnline ? 'bg-green-400' : 'bg-gray-500'}`} />
+                      <div className="absolute top-2 right-2">
+                        <div 
+                          className="w-3 h-3 rounded-full"
+                          style={{ backgroundColor: getRepartidorStatusColor(repartidor.location.status) }}
+                        ></div>
                       </div>
-                      <div className="flex items-center text-xs text-muted mb-1">
-                        <span className="truncate">🚗 {repartidor.tipo_vehiculo}</span>
-                      </div>
-                      <div className="flex items-center text-xs text-muted">
-                        <span>⚡ {repartidor.location.speed} km/h</span>
+
+                      {/* SOLO NOMBRE */}
+                      <div className="flex items-center justify-center h-full">
+                        <h4 className="font-semibold text-white text-sm text-center">
+                          {repartidor.nombre}
+                        </h4>
                       </div>
                     </div>
                   ))}

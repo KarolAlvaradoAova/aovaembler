@@ -1,4 +1,4 @@
-import { fetchPedidos, fetchRepartidores, fetchSucursales, fetchIncidencias } from '@/lib/utils';
+import { fetchPedidos, fetchSucursales, fetchIncidencias, fetchPedidosFromCSV, fetchUsersFromCSV } from '@/lib/utils';
 import { RealTimeMap } from './real-time-map';
 import { ErrorBoundary } from '../error-boundary';
 import { DashboardRealTimeMap } from '../dashboard-real-time-map';
@@ -17,6 +17,7 @@ export function Routes() {
   const [pedidos, setPedidos] = useState<any[]>([]);
   const [repartidores, setRepartidores] = useState<any[]>([]);
   const [sucursales, setSucursales] = useState<any[]>([]);
+  const [users, setUsers] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [pedidoExpandido, setPedidoExpandido] = useState<number | null>(null);
   // Solo para la tabla de reporte de entregas
@@ -28,14 +29,14 @@ export function Routes() {
   const [tipoGrafico, setTipoGrafico] = useState('barras');
 
   useEffect(() => {
-    // Mantén la carga de pedidos, repartidores y sucursales igual
+    // Cargar datos desde CSV y API
     Promise.all([
-      fetchPedidos(),
-      fetchRepartidores(),
+      fetchPedidosFromCSV(), // Usar CSV para pedidos
+      fetchUsersFromCSV(),   // Usar CSV para usuarios
       fetchSucursales()
-    ]).then(([pedidosData, repartidoresData, sucursalesData]) => {
+    ]).then(([pedidosData, usersData, sucursalesData]) => {
       setPedidos(pedidosData);
-      setRepartidores(repartidoresData);
+      setUsers(usersData);
       setSucursales(sucursalesData);
       setLoading(false);
     });
@@ -43,21 +44,20 @@ export function Routes() {
     fetchIncidencias().then(data => setIncidenciasReporte(data));
   }, []);
 
-  // Contadores conectados a la base de datos
-  // Entregas realizadas hoy (no hay campo de fecha, así que solo entregados)
-  const entregasHoy = pedidos.filter(p => p.estado === 'entregado').length;
-  // Entregas en reparto
-  const enReparto = pedidos.filter(p => p.estado === 'en_ruta').length;
-  // Repartidores disponibles: los que NO están asignados a un pedido en_ruta
-  const repartidoresOcupados = pedidos.filter(p => p.estado === 'en_ruta').map(p => String(p.repartidor_asignado));
-  const repartidoresDisponibles = repartidores.filter(r => r.status === 'disponible').length;
+  // Contadores conectados a la base de datos CSV
+  // Entregas completadas: número de pedidos en pedidosdb.csv cuyo valor en sta_p sea entregado
+  const entregasCompletadas = pedidos.filter(p => p.sta_p === 'entregado').length;
+  // Entregas en curso: opuesto a entregas completadas (todos los que no son entregado)
+  const entregasEnCurso = pedidos.filter(p => p.sta_p !== 'entregado').length;
+  // Repartidores libres: cantidad de usuarios en users.csv cuyo valor sta_u sea disponible
+  const repartidoresLibres = users.filter(u => u.type_u === 'repartidor' && u.sta_u === 'disponible').length;
   // Porcentaje de entregas completadas respecto al total de pedidos
-  const porcentajeEntregados = pedidos.length > 0 ? Math.round((entregasHoy / pedidos.length) * 100) : 0;
+  const porcentajeEntregados = pedidos.length > 0 ? Math.round((entregasCompletadas / pedidos.length) * 100) : 0;
 
   // Función para recargar pedidos
   const reloadPedidos = async () => {
     setLoading(true);
-    const pedidosData = await fetchPedidos();
+    const pedidosData = await fetchPedidosFromCSV();
     setPedidos(pedidosData);
     setLoading(false);
   };
@@ -127,7 +127,7 @@ export function Routes() {
                   <div className="status-indicator status-success">+{porcentajeEntregados}%</div>
                 </div>
                 <div>
-                  <h3 className="text-3xl font-bold text-white mb-1">{entregasHoy}</h3>
+                  <h3 className="text-3xl font-bold text-white mb-1">{entregasCompletadas}</h3>
                   <p className="text-yellow-400 font-medium mb-2">Entregas completadas</p>
                   <p className="text-xs text-muted">Hoy comparado con ayer</p>
                 </div>
@@ -144,7 +144,7 @@ export function Routes() {
                   <div className="status-indicator status-warning">En ruta</div>
                 </div>
                 <div>
-                  <h3 className="text-3xl font-bold text-white mb-1">{enReparto}</h3>
+                  <h3 className="text-3xl font-bold text-white mb-1">{entregasEnCurso}</h3>
                   <p className="text-yellow-400 font-medium mb-2">Entregas en curso</p>
                   <p className="text-xs text-muted">Pedidos activos en reparto</p>
                 </div>
@@ -160,7 +160,7 @@ export function Routes() {
                   <div className="status-indicator status-info">Disponible</div>
                 </div>
                 <div>
-                  <h3 className="text-3xl font-bold text-white mb-1">{repartidoresDisponibles}</h3>
+                  <h3 className="text-3xl font-bold text-white mb-1">{repartidoresLibres}</h3>
                   <p className="text-yellow-400 font-medium mb-2">Repartidores libres</p>
                   <p className="text-xs text-muted">Listos para asignación</p>
                 </div>
@@ -184,27 +184,30 @@ export function Routes() {
               <div className="card-modern p-6">
                 <h3 className="text-xl font-semibold text-white mb-4">Estado del equipo</h3>
                 <div className="space-y-3">
-                  {repartidores.slice(0, 4).map((r) => {
-                    // Usar sucursal_base directamente del repartidor
-                    const sucursal = r.sucursal_base ? r.sucursal_base.charAt(0).toUpperCase() + r.sucursal_base.slice(1) : 'Sucursal Central';
-                    // Determinar color y texto según status
-                    const statusColor = r.status === 'en_ruta' ? 'status-warning' : r.status === 'ocupado' ? 'status-info' : 'status-success';
-                    const statusText = r.status === 'en_ruta' ? 'En ruta' : r.status === 'ocupado' ? 'Ocupado' : 'Disponible';
-                    return (
-                      <div key={r.id} className="flex items-center justify-between p-3 bg-zinc-800/50 rounded-lg">
-                        <div className="flex items-center space-x-3">
-                          <div className="w-10 h-10 bg-gradient-to-br from-yellow-400 to-yellow-500 rounded-full flex items-center justify-center text-black font-bold">
-                            {String(r.id).padStart(2, '0')}
+                  {users
+                    .filter(u => u.type_u === 'repartidor')
+                    .slice(0, 4)
+                    .map((r) => {
+                      // Usar suc_u directamente del usuario
+                      const sucursal = r.suc_u ? r.suc_u.charAt(0).toUpperCase() + r.suc_u.slice(1) : 'Sucursal Central';
+                      // Determinar color y texto según sta_u
+                      const statusColor = r.sta_u === 'en_ruta' ? 'status-warning' : r.sta_u === 'ocupado' ? 'status-info' : 'status-success';
+                      const statusText = r.sta_u === 'en_ruta' ? 'En ruta' : r.sta_u === 'ocupado' ? 'Ocupado' : 'Disponible';
+                      return (
+                        <div key={r.id_u} className="flex items-center justify-between p-3 bg-zinc-800/50 rounded-lg">
+                          <div className="flex items-center space-x-3">
+                            <div className="w-10 h-10 bg-gradient-to-br from-yellow-400 to-yellow-500 rounded-full flex items-center justify-center text-black font-bold">
+                              {String(r.id_u).padStart(2, '0')}
+                            </div>
+                            <div>
+                              <p className="font-medium text-white">{r.name_u}</p>
+                              <p className="text-sm text-muted">{sucursal}</p>
+                            </div>
                           </div>
-                          <div>
-                            <p className="font-medium text-white">{r.nombre}</p>
-                            <p className="text-sm text-muted">{sucursal}</p>
-                          </div>
+                          <div className={`status-indicator ${statusColor}`}>{statusText}</div>
                         </div>
-                        <div className={`status-indicator ${statusColor}`}>{statusText}</div>
-                      </div>
-                    );
-                  })}
+                      );
+                    })}
                 </div>
               </div>
             </div>
@@ -230,30 +233,34 @@ export function Routes() {
                     </tr>
                   </thead>
                   <tbody>
-                    {pedidos.slice(0, 8).map((p) => (
-                      <tr key={p.id}>
-                        <td>
-                          <span className="font-mono text-yellow-400">#{p.id}</span>
-                        </td>
-                        <td className="max-w-32 truncate">{p.productos}</td>
-                        <td className="max-w-40 truncate">{p.direccion}</td>
-                        <td>
-                          <div className={`status-indicator ${
-                            p.estado === 'entregado' ? 'status-success' :
-                            p.estado === 'en_ruta' ? 'status-warning' :
-                            'status-info'
-                          }`}>
-                            {traducirEstadoPedido(p.estado)}
-                          </div>
-                        </td>
-                        <td>{p.sucursal_asignada}</td>
-                        <td>
-                          <div className="w-8 h-8 bg-gradient-to-br from-yellow-400 to-yellow-500 rounded-full flex items-center justify-center text-black text-xs font-bold">
-                            {String(p.repartidor_asignado).padStart(2, '0')}
-                          </div>
-                        </td>
-                      </tr>
-                    ))}
+                    {pedidos.slice(0, 8).map((p) => {
+                      // Extraer la primera parte de prod_p para mostrar solo el primer producto
+                      const primerProducto = p.prod_p.split(',')[0];
+                      return (
+                        <tr key={p.id_p}>
+                          <td>
+                            <span className="font-mono text-yellow-400">#{p.id_p}</span>
+                          </td>
+                          <td className="max-w-32 truncate">{primerProducto}</td>
+                          <td className="max-w-40 truncate">{p.loc_p}</td>
+                          <td>
+                            <div className={`status-indicator ${
+                              p.sta_p === 'entregado' ? 'status-success' :
+                              p.sta_p === 'en_ruta' ? 'status-warning' :
+                              'status-info'
+                            }`}>
+                              {traducirEstadoPedido(p.sta_p)}
+                            </div>
+                          </td>
+                          <td>{p.suc_p}</td>
+                          <td>
+                            <div className="w-8 h-8 bg-gradient-to-br from-yellow-400 to-yellow-500 rounded-full flex items-center justify-center text-black text-xs font-bold">
+                              {String(p.del_p).padStart(2, '0')}
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
@@ -277,39 +284,76 @@ export function Routes() {
             <IncidentsTable />
           </TabsContent>
           <TabsContent value="detalles-repartidores">
-            {/* Tabla de detalles de repartidores, ahora con formato visual solicitado y expandible */}
+            {/* Tabla de detalles de pedidos desde pedidosdb.csv */}
             <div className="overflow-x-auto w-full rounded-xl shadow-lg">
               <table className="min-w-full rounded-xl overflow-hidden">
                 <thead>
                   <tr className="bg-yellow-400 text-black text-lg">
-                    <th className="p-3 font-bold">Pedido</th>
-                    <th className="p-3 font-bold">Repartidor</th>
+                    <th className="p-3 font-bold">ID Pedido</th>
+                    <th className="p-3 font-bold">Productos</th>
+                    <th className="p-3 font-bold">Dirección</th>
                     <th className="p-3 font-bold">Estado</th>
-                    <th className="p-3 font-bold">Sucursal origen</th>
+                    <th className="p-3 font-bold">Sucursal</th>
+                    <th className="p-3 font-bold">Repartidor</th>
                   </tr>
                 </thead>
                 <tbody>
                   {pedidos.map((p) => (
                     <>
                       <tr
-                        key={p.id}
-                        className={`bg-black text-white border-b border-yellow-400 hover:bg-yellow-400/10 transition cursor-pointer ${pedidoExpandido === p.id ? 'ring-2 ring-yellow-400' : ''}`}
-                        onClick={() => setPedidoExpandido(pedidoExpandido === p.id ? null : p.id)}
+                        key={p.id_p}
+                        className={`bg-black text-white border-b border-yellow-400 hover:bg-yellow-400/10 transition cursor-pointer ${pedidoExpandido === p.id_p ? 'ring-2 ring-yellow-400' : ''}`}
+                        onClick={() => setPedidoExpandido(pedidoExpandido === p.id_p ? null : p.id_p)}
                       >
-                        <td className="p-3 font-bold text-yellow-300">D{p.id}</td>
-                        <td className="p-3">{String(p.repartidor_asignado).padStart(3, '0')}</td>
-                        <td className="p-3">{traducirEstadoPedido(p.estado)}</td>
-                        <td className="p-3">{p.sucursal_asignada}</td>
+                        <td className="p-3 font-bold text-yellow-300">#{p.id_p}</td>
+                        <td className="p-3 max-w-48 truncate">{p.prod_p}</td>
+                        <td className="p-3 max-w-48 truncate">{p.loc_p}</td>
+                        <td className="p-3">
+                          <div className={`status-indicator ${
+                            p.sta_p === 'entregado' ? 'status-success' :
+                            p.sta_p === 'en_ruta' ? 'status-warning' :
+                            'status-info'
+                          }`}>
+                            {traducirEstadoPedido(p.sta_p)}
+                          </div>
+                        </td>
+                        <td className="p-3">{p.suc_p}</td>
+                        <td className="p-3">
+                          <div className="w-8 h-8 bg-gradient-to-br from-yellow-400 to-yellow-500 rounded-full flex items-center justify-center text-black text-xs font-bold">
+                            {String(p.del_p || 'N/A').padStart(2, '0')}
+                          </div>
+                        </td>
                       </tr>
-                      {pedidoExpandido === p.id && (
+                      {pedidoExpandido === p.id_p && (
                         <tr className="bg-yellow-50 text-black">
-                          <td colSpan={4} className="p-4 border-b border-yellow-400">
-                            <div className="font-bold mb-2">Detalles del pedido</div>
-                            <div><span className="font-semibold">Productos:</span> {p.productos}</div>
-                            <div><span className="font-semibold">Dirección:</span> {p.direccion}</div>
-                            <div><span className="font-semibold">Lat/Lng:</span> {p.latitud}, {p.longitud}</div>
-                            <div><span className="font-semibold">Estado:</span> {traducirEstadoPedido(p.estado)}</div>
-                            <div><span className="font-semibold">Sucursal origen:</span> {p.sucursal_asignada}</div>
+                          <td colSpan={6} className="p-4 border-b border-yellow-400">
+                            <div className="font-bold mb-2 text-lg">Detalles completos del pedido #{p.id_p}</div>
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                              <div>
+                                <div className="font-semibold text-yellow-600 mb-1">Productos:</div>
+                                <div className="text-sm bg-gray-100 p-2 rounded">{p.prod_p}</div>
+                              </div>
+                              <div>
+                                <div className="font-semibold text-yellow-600 mb-1">Dirección completa:</div>
+                                <div className="text-sm bg-gray-100 p-2 rounded">{p.loc_p}</div>
+                              </div>
+                              <div>
+                                <div className="font-semibold text-yellow-600 mb-1">Estado actual:</div>
+                                <div className="text-sm bg-gray-100 p-2 rounded">{traducirEstadoPedido(p.sta_p)}</div>
+                              </div>
+                              <div>
+                                <div className="font-semibold text-yellow-600 mb-1">Sucursal origen:</div>
+                                <div className="text-sm bg-gray-100 p-2 rounded">{p.suc_p}</div>
+                              </div>
+                              <div>
+                                <div className="font-semibold text-yellow-600 mb-1">Repartidor asignado:</div>
+                                <div className="text-sm bg-gray-100 p-2 rounded">{p.del_p || 'Sin asignar'}</div>
+                              </div>
+                              <div>
+                                <div className="font-semibold text-yellow-600 mb-1">ID del pedido:</div>
+                                <div className="text-sm bg-gray-100 p-2 rounded font-mono">#{p.id_p}</div>
+                              </div>
+                            </div>
                           </td>
                         </tr>
                       )}
@@ -324,11 +368,11 @@ export function Routes() {
               {/* KPIs rápidos y resumen de incidencias */}
               <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
                 <div className="card-modern p-4 flex flex-col items-center bg-black border-2 border-yellow-400 rounded-2xl shadow-yellow">
-                  <div className="text-2xl font-bold text-yellow-400 mb-1">{pedidos.filter(p => p.estado === 'entregado').length}</div>
+                  <div className="text-2xl font-bold text-yellow-400 mb-1">{pedidos.filter(p => p.sta_p === 'entregado').length}</div>
                   <div className="text-white font-medium">Entregas completadas</div>
                 </div>
                 <div className="card-modern p-4 flex flex-col items-center bg-black border-2 border-yellow-400 rounded-2xl shadow-yellow">
-                  <div className="text-2xl font-bold text-yellow-400 mb-1">{pedidos.filter(p => p.estado === 'en_ruta').length}</div>
+                  <div className="text-2xl font-bold text-yellow-400 mb-1">{pedidos.filter(p => p.sta_p !== 'entregado').length}</div>
                   <div className="text-white font-medium">En reparto</div>
                 </div>
                 <div className="card-modern p-4 flex flex-col items-center bg-black border-2 border-yellow-400 rounded-2xl shadow-yellow">
@@ -362,15 +406,15 @@ export function Routes() {
                           .map((suc, idx) => {
                             const nombre = suc.nombre || suc.sucursal || '';
                             // Filtro de pedidos por sucursal y periodo
-                            let pedidosSucursal = pedidos.filter(p => (p.sucursal_asignada || '').toLowerCase() === nombre.toLowerCase());
+                            let pedidosSucursal = pedidos.filter(p => (p.suc_p || '').toLowerCase() === nombre.toLowerCase());
                             // Filtro por periodo (simulado, ya que no hay fecha real)
                             if (periodo === 'semanal') {
-                              pedidosSucursal = pedidosSucursal.filter(p => p.estado === 'entregado' || p.estado === 'en_ruta');
+                              pedidosSucursal = pedidosSucursal.filter(p => p.sta_p === 'entregado' || p.sta_p === 'en_ruta');
                             } else if (periodo === 'mensual') {
-                              pedidosSucursal = pedidosSucursal.filter(p => p.estado === 'entregado');
+                              pedidosSucursal = pedidosSucursal.filter(p => p.sta_p === 'entregado');
                             }
-                            const enReparto = pedidosSucursal.filter(p => p.estado === 'en_ruta').length;
-                            const entregas = pedidosSucursal.filter(p => p.estado === 'entregado').length;
+                            const enReparto = pedidosSucursal.filter(p => p.sta_p === 'en_ruta').length;
+                            const entregas = pedidosSucursal.filter(p => p.sta_p === 'entregado').length;
                             // Incidencias: por sucursal, usando ubicacion o sucursal_asignada si existe
                             const incidenciasSucursal = incidenciasReporte.filter(i => {
                               if (i.ubicacion && i.ubicacion.toLowerCase().includes(nombre.toLowerCase())) return true;
@@ -451,14 +495,14 @@ export function Routes() {
                         } else {
                           data = sucursalesFiltradas.map((suc) => {
                             const nombre = suc.nombre || suc.sucursal || '';
-                            let pedidosSucursal = pedidos.filter(p => (p.sucursal_asignada || '').toLowerCase() === nombre.toLowerCase());
+                            let pedidosSucursal = pedidos.filter(p => (p.suc_p || '').toLowerCase() === nombre.toLowerCase());
                             if (periodo === 'semanal') {
-                              pedidosSucursal = pedidosSucursal.filter(p => p.estado === 'entregado' || p.estado === 'en_ruta');
+                              pedidosSucursal = pedidosSucursal.filter(p => p.sta_p === 'entregado' || p.sta_p === 'en_ruta');
                             } else if (periodo === 'mensual') {
-                              pedidosSucursal = pedidosSucursal.filter(p => p.estado === 'entregado');
+                              pedidosSucursal = pedidosSucursal.filter(p => p.sta_p === 'entregado');
                             }
-                            const enReparto = pedidosSucursal.filter(p => p.estado === 'en_ruta').length;
-                            const entregas = pedidosSucursal.filter(p => p.estado === 'entregado').length;
+                            const enReparto = pedidosSucursal.filter(p => p.sta_p === 'en_ruta').length;
+                            const entregas = pedidosSucursal.filter(p => p.sta_p === 'entregado').length;
                             const incidenciasSucursal = incidenciasReporte.filter(i => {
                               if (i.ubicacion && i.ubicacion.toLowerCase().includes(nombre.toLowerCase())) return true;
                               if (i.sucursal_asignada && i.sucursal_asignada.toLowerCase() === nombre.toLowerCase()) return true;
@@ -515,11 +559,11 @@ export function Routes() {
                         } else {
                           data = sucursalesFiltradas.map((suc) => {
                             const nombre = suc.nombre || suc.sucursal || '';
-                            let pedidosSucursal = pedidos.filter(p => (p.sucursal_asignada || '').toLowerCase() === nombre.toLowerCase());
+                            let pedidosSucursal = pedidos.filter(p => (p.suc_p || '').toLowerCase() === nombre.toLowerCase());
                             if (periodo === 'semanal') {
-                              pedidosSucursal = pedidosSucursal.filter(p => p.estado === 'entregado' || p.estado === 'en_ruta');
+                              pedidosSucursal = pedidosSucursal.filter(p => p.sta_p === 'entregado' || p.sta_p === 'en_ruta');
                             } else if (periodo === 'mensual') {
-                              pedidosSucursal = pedidosSucursal.filter(p => p.estado === 'entregado');
+                              pedidosSucursal = pedidosSucursal.filter(p => p.sta_p === 'entregado');
                             }
                             const total = pedidosSucursal.length;
                             return {
@@ -545,7 +589,7 @@ export function Routes() {
                       (() => {
                         const dias = ['Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb', 'Dom'];
                         let sucursalesFiltradas = sucursales.filter((suc) => zona === 'todas' || (suc.nombre || '').toLowerCase() === zona.toLowerCase());
-                        let hayDatos = pedidos.some(p => p.estado === 'entregado');
+                        let hayDatos = pedidos.some(p => p.sta_p === 'entregado');
                         let data: any[];
                         if (!hayDatos) {
                           data = dias.map((dia, idx) => {
@@ -561,7 +605,7 @@ export function Routes() {
                             const obj: any = { dia };
                             sucursalesFiltradas.forEach((suc) => {
                               const nombre = suc.nombre || suc.sucursal || '';
-                              const entregas = pedidos.filter(p => (p.sucursal_asignada || '').toLowerCase() === nombre.toLowerCase() && p.estado === 'entregado').length;
+                              const entregas = pedidos.filter(p => (p.suc_p || '').toLowerCase() === nombre.toLowerCase() && p.sta_p === 'entregado').length;
                               obj[nombre.charAt(0).toUpperCase() + nombre.slice(1)] = Math.max(0, Math.round(entregas * (0.7 + 0.1 * idx)));
                             });
                             return obj;
@@ -601,9 +645,10 @@ export function Routes() {
 // Utilidad para traducir el estado a texto amigable
 function traducirEstadoPedido(estado: string) {
   switch (estado) {
-    case 'en_ruta': return 'En reparto';
-    case 'pendiente': return 'En recolección';
+    case 'pendiente': return 'Pendiente';
     case 'surtido': return 'Surtido';
+    case 'recogido': return 'Recogido';
+    case 'en_ruta': return 'En reparto';
     case 'entregado': return 'Entregado';
     default: return estado;
   }

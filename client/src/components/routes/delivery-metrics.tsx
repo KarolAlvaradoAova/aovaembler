@@ -1,32 +1,42 @@
 import { useEffect, useState } from 'react';
-import { fetchPedidos } from '@/lib/utils';
+import { fetchPedidosFromCSV, fetchIncidenciasFromCSV } from '@/lib/utils';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Progress } from '@/components/ui/progress';
 
 export function DeliveryMetrics() {
   const [pedidos, setPedidos] = useState<any[]>([]);
+  const [incidencias, setIncidencias] = useState<any[]>([]);
 
   useEffect(() => {
-    fetchPedidos().then((data) => {
-      setPedidos(data);
-    });
+    const loadData = async () => {
+      try {
+        const [pedidosData, incidenciasData] = await Promise.all([
+          fetchPedidosFromCSV(),
+          fetchIncidenciasFromCSV()
+        ]);
+        setPedidos(pedidosData);
+        setIncidencias(incidenciasData);
+      } catch (error) {
+        console.error('Error cargando datos:', error);
+      }
+    };
+    
+    loadData();
   }, []);
 
-  // Métricas conectadas a la base de datos
+  // Métricas conectadas a la base de datos CSV
   const total = pedidos.length;
-  const completados = pedidos.filter(p => p.estado === 'entregado').length;
-  const enRuta = pedidos.filter(p => p.estado === 'en_ruta').length;
-  const pendientes = pedidos.filter(p => p.estado === 'pendiente').length;
-  const surtidos = pedidos.filter(p => p.estado === 'surtido').length;
-  // Incidencias: si tuvieras un campo de incidencias, aquí se cuenta. Por ahora, 0.
-  const incidencias = 0;
+  const pendientes = pedidos.filter(p => ['pendiente', 'surtido', 'recogido'].includes(p.sta_p)).length;
+  const enRuta = pedidos.filter(p => p.sta_p === 'en_ruta').length;
+  const entregados = pedidos.filter(p => p.sta_p === 'entregado').length;
+  // Incidencias: obtenidas desde incidenciasdb.csv
+  const totalIncidencias = incidencias.length;
 
   // Porcentajes
-  const completadosPct = total > 0 ? Math.round((completados / total) * 100) : 0;
-  const enRutaPct = total > 0 ? Math.round((enRuta / total) * 100) : 0;
   const pendientesPct = total > 0 ? Math.round((pendientes / total) * 100) : 0;
-  const surtidosPct = total > 0 ? Math.round((surtidos / total) * 100) : 0;
-  const incidenciasPct = total > 0 ? Math.round((incidencias / total) * 100) : 0;
+  const enRutaPct = total > 0 ? Math.round((enRuta / total) * 100) : 0;
+  const entregadosPct = total > 0 ? Math.round((entregados / total) * 100) : 0;
+  const incidenciasPct = total > 0 ? Math.round((totalIncidencias / total) * 100) : 0;
 
   return (
     <Card className="bg-black border-2 border-yellow-400 rounded-2xl shadow-yellow p-0">
@@ -39,8 +49,8 @@ export function DeliveryMetrics() {
           <div className="flex flex-col justify-between bg-gray-900 rounded-xl p-4 shadow-yellow border border-yellow-400 min-h-[120px] relative">
             <div>
               <div className="text-yellow-400 text-xs font-semibold mb-1">Completadas</div>
-              <div className="text-3xl font-extrabold text-white leading-tight">{completados}</div>
-              <div className="text-xs text-gray-400">{completadosPct}%</div>
+              <div className="text-3xl font-extrabold text-white leading-tight">{entregados}</div>
+              <div className="text-xs text-gray-400">{entregadosPct}%</div>
             </div>
             <div className="absolute bottom-2 left-2 right-2 h-4 flex items-end">
               <div className="w-full h-1 bg-gradient-to-r from-yellow-400/40 to-yellow-400/10 rounded-full" />
@@ -68,18 +78,8 @@ export function DeliveryMetrics() {
           </div>
           <div className="flex flex-col justify-between bg-gray-900 rounded-xl p-4 shadow-yellow border border-yellow-400 min-h-[120px] relative">
             <div>
-              <div className="text-yellow-400 text-xs font-semibold mb-1">Surtidos</div>
-              <div className="text-3xl font-extrabold text-white leading-tight">{surtidos}</div>
-              <div className="text-xs text-gray-400">{surtidosPct}%</div>
-            </div>
-            <div className="absolute bottom-2 left-2 right-2 h-4 flex items-end">
-              <div className="w-full h-1 bg-gradient-to-r from-yellow-400/40 to-yellow-400/10 rounded-full" />
-            </div>
-          </div>
-          <div className="flex flex-col justify-between bg-gray-900 rounded-xl p-4 shadow-yellow border border-yellow-400 min-h-[120px] relative">
-            <div>
               <div className="text-yellow-400 text-xs font-semibold mb-1">Incidencias</div>
-              <div className="text-3xl font-extrabold text-white leading-tight">{incidencias}</div>
+              <div className="text-3xl font-extrabold text-white leading-tight">{totalIncidencias}</div>
               <div className="text-xs text-gray-400">{incidenciasPct}%</div>
             </div>
             <div className="absolute bottom-2 left-2 right-2 h-4 flex items-end">
@@ -92,9 +92,9 @@ export function DeliveryMetrics() {
           <div className="space-y-2">
             <div className="flex items-center justify-between">
               <span className="text-sm text-gray-400">Entregas Completadas</span>
-              <span className="text-sm font-medium text-white">{completadosPct}% ({completados})</span>
+              <span className="text-sm font-medium text-white">{entregadosPct}% ({entregados})</span>
             </div>
-            <Progress value={completadosPct} className="h-2" />
+            <Progress value={entregadosPct} className="h-2" />
           </div>
           <div className="space-y-2">
             <div className="flex items-center justify-between">
@@ -112,15 +112,8 @@ export function DeliveryMetrics() {
           </div>
           <div className="space-y-2">
             <div className="flex items-center justify-between">
-              <span className="text-sm text-gray-400">Surtidos</span>
-              <span className="text-sm font-medium text-white">{surtidosPct}% ({surtidos})</span>
-            </div>
-            <Progress value={surtidosPct} className="h-2" />
-          </div>
-          <div className="space-y-2">
-            <div className="flex items-center justify-between">
               <span className="text-sm text-gray-400">Incidencias</span>
-              <span className="text-sm font-medium text-white">{incidenciasPct}%</span>
+              <span className="text-sm font-medium text-white">{incidenciasPct}% ({totalIncidencias})</span>
             </div>
             <Progress value={incidenciasPct} className="h-2" />
           </div>

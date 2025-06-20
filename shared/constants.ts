@@ -38,10 +38,10 @@ export const SUCURSALES = {
 
 export const ESTADOS_PEDIDO = {
   PENDIENTE: 'pendiente',
-  PREPARANDO: 'preparando',
+  SURTIDO: 'surtido',
+  RECOGIDO: 'recogido',
   EN_RUTA: 'en_ruta',
   ENTREGADO: 'entregado',
-  CANCELADO: 'cancelado',
 } as const;
 
 export const ESTADOS_REPARTIDOR = {

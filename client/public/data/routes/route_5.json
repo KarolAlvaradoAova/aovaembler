@@ -1,0 +1,47 @@
+{
+  "repartidor_id": 5,
+  "repartidor_nombre": "Juan Prez",
+  "sucursal": "satelite",
+  "vehicle_type": "moto",
+  "created_at": "2025-06-19T22:36:19.691Z",
+  "status": "active",
+  "current_stop_index": 0,
+  "total_distance": 0,
+  "total_duration": 0,
+  "stops": [
+    {
+      "lat": -99.237374,
+      "lng": 19.500142,
+      "address": "Ubicación de Juan P�rez",
+      "repartidor_id": 5,
+      "order": 0,
+      "type": "origin"
+    },
+    {
+      "type": "delivery",
+      "lat": 19.355432,
+      "lng": -99.185678,
+      "address": "Calle Guerrero 567, Satelite",
+      "pedido_id": 1037,
+      "productos": "1x0028115233 *1,2x0002542508 *1",
+      "sucursal": "satelite",
+      "order": 1,
+      "status": "pendiente"
+    },
+    {
+      "type": "delivery",
+      "lat": 19.375432,
+      "lng": -99.205678,
+      "address": "Calle Benito Juárez 789, Satelite",
+      "pedido_id": 1041,
+      "productos": "2x0002009923 *1,1x0024669701 *1",
+      "sucursal": "satelite",
+      "order": 2,
+      "status": "pendiente"
+    }
+  ],
+  "pedidos_count": 2,
+  "optimized": false,
+  "error": "ZERO_RESULTS",
+  "updated_at": "2025-06-20T07:12:26.240Z"
+}

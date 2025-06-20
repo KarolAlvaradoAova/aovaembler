@@ -9,7 +9,7 @@ import {
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { useEffect, useState } from 'react';
-import { fetchIncidencias } from '@/lib/utils';
+import { fetchIncidenciasFromCSV } from '@/lib/utils';
 
 const badgeColor = (estado: string) => {
   if (estado.toLowerCase().includes('pendiente')) return 'destructive';
@@ -22,7 +22,7 @@ export function IncidentsTable() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    fetchIncidencias().then((data) => {
+    fetchIncidenciasFromCSV().then((data) => {
       setIncidents(data);
       setLoading(false);
     });

@@ -1,0 +1,9 @@
+id_u,type_u,user_u,pass_u,suc_u,name_u,vehi_u,sta_u,lat,lon
+1,admin,admin,admin123,global,Embler Admin,moto,fijo,,
+2,almacenista,pedro,almacen1,satelite,Pedro Garca,moto,fijo,19.500142,-99.237374
+3,almacenista,lucia,almacen2,metepec,Luca Fernndez,moto,fijo,19.263373,-99.632921
+4,almacenista,roberto,almacen3,lindavista,Roberto Daz,moto,fijo,19.516238,-99.143365
+5,repartidor,juan,reparto1,satelite,Juan Prez,moto,en_ruta,19.50014,-99.237378
+6,repartidor,ana,reparto2,metepec,Ana Lpez,moto,en_ruta,19.263373,-99.632921
+7,repartidor,carlos,reparto3,lindavista,Carlos Ruz,moto,en_ruta,19.516238,-99.143365
+8,repartidor,maria,reparto4,satelite,Maria Torres,moto,en_ruta,19.500142,-99.237374

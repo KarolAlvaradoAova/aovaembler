@@ -1,0 +1,124 @@
+{
+  "repartidor_id": 8,
+  "repartidor_nombre": "Maria Torres",
+  "sucursal": "satelite",
+  "vehicle_type": "moto",
+  "created_at": "2025-06-19T22:36:22.986Z",
+  "status": "active",
+  "current_stop_index": 0,
+  "total_distance": 0,
+  "total_duration": 0,
+  "stops": [
+    {
+      "lat": -99.237374,
+      "lng": 19.500142,
+      "address": "Ubicación de Maria Torres",
+      "repartidor_id": 8,
+      "order": 0,
+      "type": "origin"
+    },
+    {
+      "lat": 19.4327,
+      "lng": -99.1333,
+      "address": "Av. Reforma 123, CDMX",
+      "pedido_id": 1001,
+      "productos": "1x11427512300-100,2x2711800109",
+      "sucursal": "satelite",
+      "order": 1,
+      "type": "delivery"
+    },
+    {
+      "lat": 19.3501,
+      "lng": -99.2001,
+      "address": "Calle 10, Satelite",
+      "pedido_id": 1004,
+      "productos": "1x0000901551 *2,4x0000943248 *3",
+      "sucursal": "satelite",
+      "order": 2,
+      "type": "delivery"
+    },
+    {
+      "lat": 19.441234,
+      "lng": -99.156789,
+      "address": "Av. Constituyentes 890, CDMX",
+      "pedido_id": 1007,
+      "productos": "1x0004202902 *1,2x0004203602 *3",
+      "sucursal": "satelite",
+      "order": 3,
+      "type": "delivery"
+    },
+    {
+      "lat": 19.365432,
+      "lng": -99.210987,
+      "address": "Calle Morelos 789, Satelite",
+      "pedido_id": 1010,
+      "productos": "4x0019931896 *1,1x0024203920 *1",
+      "sucursal": "satelite",
+      "order": 4,
+      "type": "delivery"
+    },
+    {
+      "lat": 19.345678,
+      "lng": -99.198765,
+      "address": "Calle Zaragoza 123, Satelite",
+      "pedido_id": 1014,
+      "productos": "2x0024668101 *1,1x0004317501 *1",
+      "sucursal": "satelite",
+      "order": 5,
+      "type": "delivery"
+    },
+    {
+      "lat": 19.425678,
+      "lng": -99.165432,
+      "address": "Av. Insurgentes 456, CDMX",
+      "pedido_id": 1015,
+      "productos": "1x0009060022 *1,2x0000780956 *1",
+      "sucursal": "satelite",
+      "order": 6,
+      "type": "delivery"
+    },
+    {
+      "lat": 19.355432,
+      "lng": -99.185678,
+      "address": "Calle Guerrero 567, Satelite",
+      "pedido_id": 1018,
+      "productos": "1x0028115233 *1,2x0002542508 *1",
+      "sucursal": "satelite",
+      "order": 7,
+      "type": "delivery"
+    },
+    {
+      "lat": 19.375432,
+      "lng": -99.205678,
+      "address": "Calle Benito Juárez 789, Satelite",
+      "pedido_id": 1022,
+      "productos": "2x0002009923 *1,1x0024669701 *1",
+      "sucursal": "satelite",
+      "order": 8,
+      "type": "delivery"
+    },
+    {
+      "lat": 19.405432,
+      "lng": -99.185678,
+      "address": "Av. Patriotismo 234, CDMX",
+      "pedido_id": 1023,
+      "productos": "4x0009985690 *1,2x0013307735 *1",
+      "sucursal": "satelite",
+      "order": 9,
+      "type": "delivery"
+    },
+    {
+      "lat": 19.385432,
+      "lng": -99.215678,
+      "address": "Calle López Mateos 123, Satelite",
+      "pedido_id": 1026,
+      "productos": "3x0009913940 *1,2x0003210250 *1",
+      "sucursal": "satelite",
+      "order": 10,
+      "type": "delivery"
+    }
+  ],
+  "pedidos_count": 10,
+  "optimized": false,
+  "error": "ZERO_RESULTS"
+}

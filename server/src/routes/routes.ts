@@ -1,6 +1,10 @@
 import { Router } from 'express';
 import { routeService } from '../services/routeService';
-import { loadRepartidores } from '../../database/csvLoader';
+import {
+  loadPedidos,
+  loadUsers,
+  savePedidos
+} from '../../database/csvLoader';
 
 const router = Router();
 
@@ -196,11 +200,12 @@ router.post('/sync/:repartidorId', async (req, res) => {
 // Endpoint para sincronizar todas las rutas
 router.post('/sync-all', async (_req, res) => {
   try {
-    const repartidores = await loadRepartidores();
+    const users = await loadUsers();
+    const repartidores = users.filter((u: any) => u.type_u === 'repartidor');
     const results = await Promise.all(
       repartidores.map(async (repartidor: any) => {
-        const result = await routeService.syncRouteWithPedidos(Number(repartidor.id));
-        return { repartidorId: repartidor.id, synced: result };
+        const result = await routeService.syncRouteWithPedidos(Number(repartidor.id_u));
+        return { repartidorId: repartidor.id_u, synced: result };
       })
     );
     
@@ -222,7 +227,49 @@ router.post('/sync-all', async (_req, res) => {
   }
 });
 
-// === FUNCIONES AUXILIARES REMOVIDAS ===
-// Las funciones auxiliares ahora están implementadas en RouteService
+// POST crear ruta manual con orden específico del usuario
+router.post('/manual-assign', async (req, res) => {
+  try {
+    const { repartidor_id, pedido_ids } = req.body;
 
-export default router; 
+    if (!repartidor_id || !pedido_ids || pedido_ids.length === 0) {
+      return res.status(400).json({ 
+        error: 'repartidor_id y pedido_ids son requeridos' 
+      });
+    }
+
+    console.log(`🔄 Asignando ${pedido_ids.length} pedidos al repartidor ${repartidor_id}...`);
+
+    const pedidos = await loadPedidos();
+    let updatedCount = 0;
+
+    const updatedPedidos = pedidos.map((p: any) => {
+      if (pedido_ids.includes(Number(p.id_p))) {
+        updatedCount++;
+        return {
+          ...p,
+          del_p: repartidor_id,
+          sta_p: 'pendiente'
+        };
+      }
+      return p;
+    });
+
+    await savePedidos(updatedPedidos);
+
+    console.log(`✅ ${updatedCount} pedidos actualizados para el repartidor ${repartidor_id}.`);
+
+    return res.json({
+      success: true,
+      message: 'Pedidos asignados exitosamente. La sincronización de ruta se iniciará desde el frontend.',
+      repartidor_id: repartidor_id,
+      pedidos_asignados: updatedCount
+    });
+
+  } catch (error) {
+    console.error('❌ Error en la asignación manual de pedidos:', error);
+    return res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+export default router;

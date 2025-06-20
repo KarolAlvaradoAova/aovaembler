@@ -1,0 +1,134 @@
+{
+  "repartidor_id": 6,
+  "repartidor_nombre": "Ana L�pez",
+  "sucursal": "metepec",
+  "vehicle_type": "moto",
+  "created_at": "2025-06-19T22:36:20.798Z",
+  "status": "active",
+  "current_stop_index": 0,
+  "total_distance": 0,
+  "total_duration": 0,
+  "stops": [
+    {
+      "lat": -99.632921,
+      "lng": 19.263373,
+      "address": "Ubicación de Ana L�pez",
+      "repartidor_id": 6,
+      "order": 0,
+      "type": "origin"
+    },
+    {
+      "lat": 19.2901,
+      "lng": -99.6501,
+      "address": "Calle 5, Metepec",
+      "pedido_id": 1002,
+      "productos": "3x32416796390 *1",
+      "sucursal": "metepec",
+      "order": 1,
+      "type": "delivery"
+    },
+    {
+      "lat": 19.4,
+      "lng": -99.15,
+      "address": "Calle Ficticia 789, CDMX",
+      "pedido_id": 1005,
+      "productos": "2x0001502580 *2,1x0001587803 *1",
+      "sucursal": "metepec",
+      "order": 2,
+      "type": "delivery"
+    },
+    {
+      "lat": 19.278456,
+      "lng": -99.645123,
+      "address": "Calle Hidalgo 456, Metepec",
+      "pedido_id": 1008,
+      "productos": "3x0004212312 *1",
+      "sucursal": "metepec",
+      "order": 3,
+      "type": "delivery"
+    },
+    {
+      "lat": 19.435567,
+      "lng": -99.142345,
+      "address": "Av. Juárez 234, CDMX",
+      "pedido_id": 1011,
+      "productos": "2x0007270037 *1,1x0008107419 *1",
+      "sucursal": "metepec",
+      "order": 4,
+      "type": "delivery"
+    },
+    {
+      "lat": 19.285678,
+      "lng": -99.655432,
+      "address": "Calle Allende 567, Metepec",
+      "pedido_id": 1012,
+      "productos": "3x0002021619 *1,2x0003301007 *1",
+      "sucursal": "metepec",
+      "order": 5,
+      "type": "delivery"
+    },
+    {
+      "lat": 19.275432,
+      "lng": -99.635678,
+      "address": "Calle Madero 789, Metepec",
+      "pedido_id": 1016,
+      "productos": "3x0008356107 *1,1x0024772801 *3",
+      "sucursal": "metepec",
+      "order": 6,
+      "type": "delivery"
+    },
+    {
+      "lat": 19.415432,
+      "lng": -99.175678,
+      "address": "Av. Chapultepec 890, CDMX",
+      "pedido_id": 1019,
+      "productos": "3x0004704994 *1,1x0009977070 *1",
+      "sucursal": "metepec",
+      "order": 7,
+      "type": "delivery"
+    },
+    {
+      "lat": 19.265432,
+      "lng": -99.625678,
+      "address": "Calle Cuauhtémoc 123, Metepec",
+      "pedido_id": 1020,
+      "productos": "2x0014211291 *1,1x0005003500 *5",
+      "sucursal": "metepec",
+      "order": 8,
+      "type": "delivery"
+    },
+    {
+      "lat": 19.255432,
+      "lng": -99.615678,
+      "address": "Calle Doctores 567, Metepec",
+      "pedido_id": 1024,
+      "productos": "1x0022304711 *1,3x0004208700 *1",
+      "sucursal": "metepec",
+      "order": 9,
+      "type": "delivery"
+    },
+    {
+      "lat": 19.395432,
+      "lng": -99.195678,
+      "address": "Av. División del Norte 456, CDMX",
+      "pedido_id": 1027,
+      "productos": "1x0018228920 *1,4x0001802609 *3",
+      "sucursal": "metepec",
+      "order": 10,
+      "type": "delivery"
+    },
+    {
+      "lat": 19.245432,
+      "lng": -99.605678,
+      "address": "Calle Álvaro Obregón 789, Metepec",
+      "pedido_id": 1028,
+      "productos": "2x0004661880 *1,1x0024204020 *1",
+      "sucursal": "metepec",
+      "order": 11,
+      "type": "delivery"
+    }
+  ],
+  "pedidos_count": 11,
+  "optimized": false,
+  "error": "ZERO_RESULTS"
+}

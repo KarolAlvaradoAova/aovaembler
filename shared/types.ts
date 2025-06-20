@@ -34,7 +34,7 @@ export interface Pedido {
   sucursal: string;
   productos: number;
   total: number;
-  estado_pedido: 'pendiente' | 'preparando' | 'en_ruta' | 'entregado' | 'cancelado';
+  estado_pedido: 'pendiente' | 'surtido' | 'recogido' | 'en_ruta' | 'entregado';
   fecha_creacion: string;
   fecha_entrega?: string;
   lat?: number;

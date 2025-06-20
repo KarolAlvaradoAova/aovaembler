@@ -10,7 +10,10 @@ import sucursalesRouter from './routes/sucursales';
 import almacenistasRouter from './routes/almacenistas';
 import clientesRouter from './routes/clientes';
 import incidenciasRouter from './routes/incidencias';
-import routesRouter from './routes/routes';
+import statusRouter from './routes/status';
+import routesRoutes from './routes/routes';
+import { AutoStatusUpdater } from './services/autoStatusUpdater';
+// import routesRouter from './routes/routes'; // Comentado temporalmente
 
 dotenv.config();
 
@@ -33,14 +36,25 @@ async function startServer() {
     app.use('/api/almacenistas', almacenistasRouter);
     app.use('/api/clientes', clientesRouter);
     app.use('/api/incidencias', incidenciasRouter);
-    app.use('/api/routes', routesRouter);
+    app.use('/api/status', statusRouter);
+    app.use('/api/routes', routesRoutes);
+    // app.use('/api/routes', routesRouter); // Comentado temporalmente para evitar procesos obsoletos
 
     const PORT = SERVER_CONFIG.PORT;
     app.listen(PORT, () => {
       console.log(`🚀 Backend listening on port ${PORT}`);
       console.log(`📍 Google Maps tracking APIs disponibles en /api/repartidores/tracking`);
       console.log(`🗺️  Route optimization APIs disponibles en /api/routes`);
+      console.log(`📊 Status management APIs disponibles en /api/status`);
       console.log(`🔑 Google Maps API configurada y lista para usar`);
+      
+      // ✅ NUEVO: Iniciar actualizador automático de estados
+      try {
+        AutoStatusUpdater.start();
+        console.log('🔄 AutoStatusUpdater iniciado automáticamente');
+      } catch (error) {
+        console.error('❌ Error iniciando AutoStatusUpdater:', error);
+      }
     });
 
   } catch (error) {
@@ -48,5 +62,18 @@ async function startServer() {
     process.exit(1);
   }
 }
+
+// Manejo de cierre graceful del servidor
+process.on('SIGINT', () => {
+  console.log('\n🛑 Cerrando servidor...');
+  AutoStatusUpdater.stop();
+  process.exit(0);
+});
+
+process.on('SIGTERM', () => {
+  console.log('\n🛑 Cerrando servidor...');
+  AutoStatusUpdater.stop();
+  process.exit(0);
+});
 
 startServer();

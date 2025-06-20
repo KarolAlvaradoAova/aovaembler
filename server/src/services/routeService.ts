@@ -5,7 +5,7 @@ import {
   saveParadasRuta, 
   loadPedidos,
   loadSucursales,
-  loadRepartidores
+  loadUsers
 } from '../../database/csvLoader';
 
 export interface RouteServiceInterface {
@@ -122,23 +122,30 @@ export class RouteService implements RouteServiceInterface {
     try {
       console.log(`🔄 Optimizando ruta para repartidor ${request.repartidor_id}...`);
       // Obtener datos necesarios
-      const [pedidos, sucursales, repartidores] = await Promise.all([
+      const [pedidos, sucursales, users] = await Promise.all([
         loadPedidos(),
         loadSucursales(),
-        loadRepartidores()
+        loadUsers()
       ]);
+      
+      // Filtrar solo repartidores
+      const repartidores = users.filter((u: any) => u.role === 'repartidor');
+      
       // Filtrar pedidos solicitados
       const pedidosParaRuta = pedidos.filter((p: any) => 
         request.pedido_ids.includes(Number(p.id))
       );
+      
       // Obtener información del repartidor y sucursal
       const repartidor = repartidores.find((r: any) => Number(r.id) === request.repartidor_id);
       const sucursal = sucursales.find((s: any) => 
         s.nombre.toLowerCase() === request.sucursal_origen.toLowerCase()
       );
+      
       if (!repartidor) {
         throw new Error(`Repartidor ${request.repartidor_id} no encontrado`);
       }
+      
       // Determinar el punto de origen
       let origenCoords: { lat: number; lng: number };
       if (request.use_current_location && request.current_location) {
@@ -151,7 +158,7 @@ export class RouteService implements RouteServiceInterface {
       } else {
         origenCoords = {
           lat: parseFloat(repartidor.lat?.toString() || '19.4326'),
-          lng: parseFloat(repartidor.lng?.toString() || '-99.1332')
+          lng: parseFloat(repartidor.lon?.toString() || '-99.1332')
         };
       }
       // Aplicar optimización según el método
@@ -178,9 +185,9 @@ export class RouteService implements RouteServiceInterface {
         ruta = {
           id: `ruta_persistente_${request.repartidor_id}`,
           repartidor_id: request.repartidor_id,
-          repartidor_nombre: repartidor.nombre,
+          repartidor_nombre: repartidor.name_u,
           sucursal_origen: request.sucursal_origen,
-          vehicle_type: request.vehicle_type || repartidor.tipo_vehiculo || 'car',
+          vehicle_type: request.vehicle_type || repartidor.vehi_u || 'car',
           status: 'vacía',
           created_at: now,
           started_at: '',
@@ -200,7 +207,7 @@ export class RouteService implements RouteServiceInterface {
       }
       // Actualizar la ruta persistente con los nuevos pedidos optimizados
       ruta.sucursal_origen = request.sucursal_origen;
-      ruta.vehicle_type = request.vehicle_type || repartidor.tipo_vehiculo || 'car';
+      ruta.vehicle_type = request.vehicle_type || repartidor.vehi_u || 'car';
       ruta.status = optimizedStops.length > 0 ? 'planned' : 'vacía';
       ruta.created_at = ruta.created_at || now;
       ruta.current_stop_index = 0;
@@ -258,13 +265,20 @@ export class RouteService implements RouteServiceInterface {
     try {
       console.log(`🤖 Auto-optimizando pedidos para repartidor ${repartidorId}...`);
       // Obtener pedidos asignados al repartidor
-      const [pedidos, repartidores] = await Promise.all([
+      const [pedidos, users] = await Promise.all([
         loadPedidos(),
-        loadRepartidores()
+        loadUsers()
       ]);
-      const pedidosAsignados = pedidos.filter((p: any) => 
-        Number(p.repartidor_asignado) === repartidorId && 
-        ['pendiente', 'surtido', 'en_ruta', 'en_proceso'].includes((p.estado || '').toLowerCase())
+      
+      // Filtrar solo repartidores
+      const repartidores = users.filter((u: any) => u.role === 'repartidor');
+      
+      // Filtrar solo pedidos que están en estados válidos para ruta
+      const pedidosValidos = pedidos.filter((p: any) => 
+        ['pendiente', 'surtido', 'recogido'].includes((p.estado || '').toLowerCase())
+      );
+      const pedidosAsignados = pedidosValidos.filter((p: any) => 
+        Number(p.repartidor_asignado) === repartidorId
       );
       if (pedidosAsignados.length === 0) {
         console.log(`ℹ️ No hay pedidos para auto-optimizar del repartidor ${repartidorId}`);
@@ -284,11 +298,13 @@ export class RouteService implements RouteServiceInterface {
       if (!repartidor) {
         throw new Error(`Repartidor ${repartidorId} no encontrado`);
       }
+      
       // Usar la ubicación actual del repartidor como punto de origen
       const origenCoords = {
         lat: parseFloat(repartidor.lat?.toString() || '19.4326'),
-        lng: parseFloat(repartidor.lng?.toString() || '-99.1332')
+        lng: parseFloat(repartidor.lon?.toString() || '-99.1332')
       };
+      
       // Determinar sucursal más común de los pedidos
       const sucursalConteo: { [key: string]: number } = {};
       pedidosAsignados.forEach((p: any) => {
@@ -303,7 +319,7 @@ export class RouteService implements RouteServiceInterface {
         repartidor_id: repartidorId,
         sucursal_origen: sucursalOrigen,
         pedido_ids: pedidosAsignados.map((p: any) => Number(p.id)),
-        vehicle_type: repartidor.tipo_vehiculo || 'car',
+        vehicle_type: repartidor.vehi_u || 'car',
         force_reoptimize: false, // No forzar reoptimización para mantener estado existente
         optimization_method: 'mixed',
         use_current_location: true,
@@ -585,16 +601,11 @@ export class RouteService implements RouteServiceInterface {
   }
   
   private calculateTimePriority(pedido: any): number {
-    // Calcular prioridad basada en fecha de creación y otros factores
-    const createdAt = new Date(pedido.fecha_creacion || Date.now());
-    const now = new Date();
-    const hoursOld = (now.getTime() - createdAt.getTime()) / (1000 * 60 * 60);
-    
-    // Mayor prioridad para pedidos más antiguos
-    let priority = Math.min(hoursOld * 10, 100);
-    
-    // Bonificación por estado
+    // Calcular prioridad basada en estado
+    let priority = 0;
+    if (pedido.estado === 'pendiente') priority += 10;
     if (pedido.estado === 'surtido') priority += 20;
+    if (pedido.estado === 'recogido') priority += 30;
     
     return priority;
   }
@@ -661,33 +672,79 @@ export class RouteService implements RouteServiceInterface {
 
   async syncRouteWithPedidos(repartidorId: number): Promise<boolean> {
     try {
-      const rutas = await loadRutasActivas();
-      const ruta = rutas.find((r: any) => Number(r.repartidor_id) === Number(repartidorId));
-      if (!ruta) {
-        console.log(`ℹ️ Repartidor ${repartidorId} no tiene una ruta activa`);
-        return true;
+      console.log(`🔄 Sincronizando ruta para repartidor ${repartidorId}...`);
+
+      const [users, allPedidos] = await Promise.all([
+        loadUsers(),
+        loadPedidos()
+      ]);
+
+      const repartidor = users.find((u: any) => Number(u.id_u) === repartidorId && u.type_u === 'repartidor');
+      if (!repartidor) {
+        console.error(`❌ Repartidor ${repartidorId} no encontrado para sincronización.`);
+        return false;
       }
-      const pedidos = await loadPedidos();
-      const pedidosIds = pedidos.map((p: any) => Number(p.id));
-      const rutaIds = ruta.stops ? ruta.stops.map((s: any) => Number(s.pedido_id)) : [];
-      const pedidosOrfanos = pedidosIds.filter((id: number) => !rutaIds.includes(id));
-      if (pedidosOrfanos.length === 0) {
-        console.log(`ℹ️ Todas las rutas están sincronizadas con los pedidos`);
-        return true;
+
+      const pedidosAsignados = allPedidos.filter((p: any) =>
+        String(p.del_p) === String(repartidorId) &&
+        !['entregado', 'entregada', 'completed'].includes((p.sta_p || '').toLowerCase())
+      );
+
+      console.log(`🔍 Repartidor ${repartidorId} tiene ${pedidosAsignados.length} pedidos pendientes.`);
+
+      const fs = require('fs');
+      const path = require('path');
+      const routeFilePath = path.join(__dirname, '../../../client/public/data/routes', `route_${repartidorId}.json`);
+
+      let routeData: any = {};
+
+      if (fs.existsSync(routeFilePath)) {
+        routeData = JSON.parse(fs.readFileSync(routeFilePath, 'utf8'));
+        console.log(`📁 Archivo de ruta existente cargado para repartidor ${repartidorId}.`);
+      } else {
+        console.log(`📝 No se encontró ruta existente. Creando una nueva para repartidor ${repartidorId}.`);
+        routeData = {
+          repartidor_id: repartidorId,
+          repartidor_nombre: repartidor.name_u,
+          created_at: new Date().toISOString(),
+          status: 'active',
+          stops: []
+        };
       }
-      // Vaciar la ruta si hay pedidos huérfanos
-      ruta.status = 'vacía';
-      ruta.total_stops = 0;
-      ruta.total_distance = 0;
-      ruta.total_estimated_time = 0;
-      ruta.current_stop_index = 0;
-      ruta.stops = [];
-      ruta.completed_at = new Date().toISOString();
-      await this.saveActiveRoute(ruta);
-      console.log(`✅ Ruta ${ruta.id} vaciada por inconsistencia con pedidos`);
+
+      const originStop = routeData.stops.find((s: any) => s.type === 'origin') || {
+        type: "origin",
+        lat: Number(repartidor.lat || 19.4326),
+        lng: Number(repartidor.lon || -99.1332),
+        address: `Ubicación de ${repartidor.name_u}`,
+        repartidor_id: repartidorId,
+        order: 0
+      };
+
+      const deliveryStops = pedidosAsignados.map((pedido: any, index: number) => ({
+        type: "delivery",
+        lat: Number(pedido.lat),
+        lng: Number(pedido.long),
+        address: pedido.loc_p,
+        pedido_id: Number(pedido.id_p),
+        productos: pedido.prod_p,
+        sucursal: pedido.suc_p,
+        order: index + 1,
+        status: pedido.sta_p
+      }));
+
+      routeData.repartidor_nombre = repartidor.name_u;
+      routeData.status = deliveryStops.length > 0 ? 'active' : 'completed';
+      routeData.stops = [originStop, ...deliveryStops];
+      routeData.pedidos_count = deliveryStops.length;
+      routeData.updated_at = new Date().toISOString();
+
+      fs.writeFileSync(routeFilePath, JSON.stringify(routeData, null, 2), 'utf8');
+
+      console.log(`✅ Ruta de repartidor ${repartidorId} sincronizada exitosamente con ${deliveryStops.length} paradas.`);
       return true;
     } catch (error) {
-      console.error('❌ Error sincronizando ruta con pedidos:', error);
+      console.error(`❌ Error fatal sincronizando ruta para repartidor ${repartidorId}:`, error);
       return false;
     }
   }

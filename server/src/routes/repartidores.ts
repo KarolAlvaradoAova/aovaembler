@@ -1,13 +1,24 @@
 import { Router } from 'express';
-import { loadRepartidores, saveRepartidores, loadPedidos, savePedidos, saveParadasRuta } from '../../database/csvLoader';
-import { Repartidor } from '../../../shared/types';
+import { loadUsers, saveUsers, loadPedidos, savePedidos, saveParadasRuta } from '../../database/csvLoader';
 
 const router = Router();
 
 // GET todos los repartidores
 router.get('/', async (_req, res) => {
   try {
-    const repartidores = await loadRepartidores();
+    const users = await loadUsers();
+    // Filtrar solo usuarios con type_u 'repartidor'
+    const repartidores = users
+      .filter((u: any) => u.type_u === 'repartidor')
+      .map((u: any) => ({
+        id: u.id_u,
+        nombre: u.name_u,
+        tipo_vehiculo: u.vehi_u,
+        status: u.sta_u,
+        lat: u.lat,
+        lng: u.lon,
+        activo: true
+      }));
     return res.json(repartidores);
   } catch (error) {
     console.error('❌ Error consultando repartidores:', error);
@@ -19,8 +30,9 @@ router.get('/', async (_req, res) => {
 router.get('/:id/location', async (req, res) => {
   try {
     const { id } = req.params;
-    const repartidores = await loadRepartidores();
-    const repartidor = repartidores.find((r: any) => String(r.id) === String(id));
+    const users = await loadUsers();
+    const repartidores = users.filter((u: any) => u.type_u === 'repartidor');
+    const repartidor = repartidores.find((r: any) => String(r.id_u) === String(id));
     
     if (!repartidor) {
       return res.status(404).json({ error: 'Repartidor no encontrado' });
@@ -29,12 +41,12 @@ router.get('/:id/location', async (req, res) => {
     // Retornar la ubicación actual del repartidor
     return res.json({
       repartidorId: id,
-      nombre: repartidor.nombre,
+      nombre: repartidor.name_u,
       location: {
         lat: parseFloat(repartidor.lat),
-        lng: parseFloat(repartidor.lng),
+        lng: parseFloat(repartidor.lon),
         lastUpdate: repartidor.ultima_actualizacion,
-        status: repartidor.status,
+        status: repartidor.sta_u,
         speed: parseFloat(repartidor.velocidad)
       },
       isOnline: true
@@ -55,26 +67,28 @@ router.post('/:id/location', async (req, res) => {
       return res.status(400).json({ error: 'Latitud y longitud son requeridas' });
     }
 
-    // Cargar repartidores actuales
-    const repartidores = await loadRepartidores();
-    const repartidorIndex = repartidores.findIndex((r: any) => String(r.id) === String(id));
+    // Cargar usuarios actuales
+    const users = await loadUsers();
+    const repartidorIndex = users.findIndex((u: any) => 
+      String(u.id_u) === String(id) && u.type_u === 'repartidor'
+    );
     
     if (repartidorIndex === -1) {
       return res.status(404).json({ error: 'Repartidor no encontrado' });
     }
 
     // Actualizar ubicación del repartidor
-    repartidores[repartidorIndex] = {
-      ...repartidores[repartidorIndex],
+    users[repartidorIndex] = {
+      ...users[repartidorIndex],
       lat: parseFloat(lat),
-      lng: parseFloat(lng),
-      status: status || 'en_ruta',
+      lon: parseFloat(lng),
+      sta_u: status || 'en_ruta',
       velocidad: speed || 0,
       ultima_actualizacion: new Date().toISOString()
     };
 
     // Guardar cambios en el CSV
-    await saveRepartidores(repartidores);
+    await saveUsers(users);
 
     return res.json({
       message: 'Ubicación actualizada exitosamente',
@@ -82,9 +96,9 @@ router.post('/:id/location', async (req, res) => {
       location: {
         lat: parseFloat(lat),
         lng: parseFloat(lng),
-        lastUpdate: repartidores[repartidorIndex].ultima_actualizacion,
-        status: repartidores[repartidorIndex].status,
-        speed: parseFloat(repartidores[repartidorIndex].velocidad)
+        lastUpdate: users[repartidorIndex].ultima_actualizacion,
+        status: users[repartidorIndex].sta_u,
+        speed: parseFloat(users[repartidorIndex].velocidad)
       }
     });
   } catch (error) {
@@ -96,16 +110,17 @@ router.post('/:id/location', async (req, res) => {
 // GET todas las ubicaciones en tiempo real
 router.get('/tracking/all', async (_req, res) => {
   try {
-    const repartidores = await loadRepartidores();
-    const trackingData = repartidores.map((repartidor: Repartidor) => ({
-      repartidorId: repartidor.id,
-      nombre: repartidor.nombre,
-      tipo_vehiculo: repartidor.tipo_vehiculo,
+    const users = await loadUsers();
+    const repartidores = users.filter((u: any) => u.type_u === 'repartidor');
+    const trackingData = repartidores.map((repartidor: any) => ({
+      repartidorId: repartidor.id_u,
+      nombre: repartidor.name_u,
+      tipo_vehiculo: repartidor.vehi_u,
       location: {
         lat: parseFloat(repartidor.lat?.toString() || '0'),
-        lng: parseFloat(repartidor.lng?.toString() || '0'),
+        lng: parseFloat(repartidor.lon?.toString() || '0'),
         lastUpdate: repartidor.ultima_actualizacion || new Date().toISOString(),
-        status: repartidor.status || 'disponible',
+        status: repartidor.sta_u || 'disponible',
         speed: parseFloat(repartidor.velocidad?.toString() || '0')
       },
       isOnline: true
@@ -123,48 +138,95 @@ router.get('/:id/live', async (req, res) => {
   try {
     const { id } = req.params;
     // Cargar repartidor
-    const repartidores = await loadRepartidores();
-    const repartidor = repartidores.find((r: any) => String(r.id) === String(id));
+    const users = await loadUsers();
+    const repartidores = users.filter((u: any) => u.type_u === 'repartidor');
+    const repartidor = repartidores.find((r: any) => String(r.id_u) === String(id));
     if (!repartidor) {
       return res.status(404).json({ error: 'Repartidor no encontrado' });
     }
-    // Cargar ubicación actual (simulada si no existe)
+    
+    // Ubicación actual desde users.csv (campos lat y lon)
     const ubicacion = {
-      lat: repartidor.lat ? parseFloat(repartidor.lat) : 19.43 + Math.random() * 0.01,
-      lng: repartidor.lng ? parseFloat(repartidor.lng) : -99.14 + Math.random() * 0.01,
-      status: repartidor.status || 'en_ruta',
+      lat: repartidor.lat ? parseFloat(repartidor.lat) : 19.43,
+      lng: repartidor.lon ? parseFloat(repartidor.lon) : -99.14,
+      status: repartidor.sta_u || 'en_ruta',
       timestamp: repartidor.ultima_actualizacion || new Date().toISOString()
     };
-    // Cargar pedidos asignados y no entregados
+    
+    // Cargar pedidos desde el nuevo CSV
     const pedidos = await loadPedidos();
-    const pedidosPendientes = pedidos.filter((p: any) => 
-      String(p.repartidor_asignado) === String(id) &&
-      !['entregado', 'entregada', 'completed'].includes((p.estado || '').toLowerCase())
-    );
-    // Construir vector de ruta
-    const ruta_actual = [
-      {
-        tipo: 'origen',
-        lat: ubicacion.lat,
-        lng: ubicacion.lng,
-        label: 'Ubicación actual',
-        status: ubicacion.status,
-        timestamp: ubicacion.timestamp
-      },
-      ...pedidosPendientes.map((p: any) => ({
-        tipo: 'parada',
-        pedido_id: p.id,
-        lat: parseFloat(p.latitud),
-        lng: parseFloat(p.longitud),
-        label: p.direccion,
-        status: p.estado
-      }))
-    ];
+    
+    // Intentar cargar ruta desde archivo JSON
+    let ruta_actual = [];
+    try {
+      const fs = require('fs');
+      const path = require('path');
+      const routeFilePath = path.join(__dirname, '../../../client/public/data/routes', `route_${repartidor.id_u}.json`);
+      
+      if (fs.existsSync(routeFilePath)) {
+        const routeData = JSON.parse(fs.readFileSync(routeFilePath, 'utf8'));
+        if (routeData.stops && routeData.stops.length > 0) {
+          // Convertir stops del JSON a formato ruta_actual
+          ruta_actual = routeData.stops.map((stop: any) => {
+            if (stop.type === 'origin') {
+              return {
+                tipo: 'origen',
+                lat: stop.lat,
+                lng: stop.lng,
+                label: stop.address || 'Ubicación actual',
+                status: ubicacion.status,
+                timestamp: ubicacion.timestamp
+              };
+            } else if (stop.type === 'delivery') {
+              // Buscar pedido correspondiente para obtener estado actual
+              const pedido = pedidos.find((p: any) => String(p.id_p) === String(stop.pedido_id));
+              return {
+                tipo: 'parada',
+                pedido_id: stop.pedido_id,
+                lat: stop.lat,
+                lng: stop.lng,
+                label: stop.address,
+                status: pedido ? pedido.sta_p : 'pendiente'
+              };
+            }
+            return null;
+          }).filter(Boolean);
+        }
+      }
+    } catch (routeError) {
+      console.log(`⚠️ No se pudo cargar ruta JSON para repartidor ${repartidor.id_u}:`, (routeError as Error).message);
+      
+      // Fallback: construir ruta desde pedidos asignados (usando nuevo campo del_p)
+      const pedidosPendientes = pedidos.filter((p: any) => 
+        String(p.del_p) === String(repartidor.id_u) &&
+        !['entregado', 'entregada', 'completed'].includes((p.sta_p || '').toLowerCase())
+      );
+      
+      ruta_actual = [
+        {
+          tipo: 'origen',
+          lat: ubicacion.lat,
+          lng: ubicacion.lng,
+          label: 'Ubicación actual',
+          status: ubicacion.status,
+          timestamp: ubicacion.timestamp
+        },
+        ...pedidosPendientes.map((p: any) => ({
+          tipo: 'parada',
+          pedido_id: p.id_p,
+          lat: parseFloat(p.lat || '0'),
+          lng: parseFloat(p.long || '0'),
+          label: p.loc_p || 'Dirección no especificada',
+          status: p.sta_p
+        }))
+      ];
+    }
+    
     // Responder con la estructura completa
     return res.json({
-      id: repartidor.id,
-      nombre: repartidor.nombre,
-      tipo_vehiculo: repartidor.tipo_vehiculo,
+      id: repartidor.id_u,
+      nombre: repartidor.name_u,
+      tipo_vehiculo: repartidor.vehi_u,
       ubicacion_actual: ubicacion,
       ruta_actual
     });
@@ -178,50 +240,96 @@ router.get('/:id/live', async (req, res) => {
 router.get('/live', async (_req, res) => {
   try {
     // Cargar todos los repartidores
-    const repartidores = await loadRepartidores();
-    // Cargar todos los pedidos
+    const users = await loadUsers();
+    const repartidores = users.filter((u: any) => u.type_u === 'repartidor');
+    // Cargar todos los pedidos desde el nuevo CSV
     const pedidos = await loadPedidos();
+    
     // Para cada repartidor, construir su objeto con ubicación y ruta actual
-    const repartidoresLive = repartidores.map((repartidor: any) => {
-      // Ubicación actual (simulada si no existe)
+    const repartidoresLive = await Promise.all(repartidores.map(async (repartidor: any) => {
+      // Ubicación actual desde users.csv (campos lat y lon)
       const ubicacion = {
-        lat: repartidor.lat ? parseFloat(repartidor.lat) : 19.43 + Math.random() * 0.01,
-        lng: repartidor.lng ? parseFloat(repartidor.lng) : -99.14 + Math.random() * 0.01,
-        status: repartidor.status || 'en_ruta',
+        lat: repartidor.lat ? parseFloat(repartidor.lat) : 19.43,
+        lng: repartidor.lon ? parseFloat(repartidor.lon) : -99.14,
+        status: repartidor.sta_u || 'en_ruta',
         timestamp: repartidor.ultima_actualizacion || new Date().toISOString()
       };
-      // Pedidos asignados y no entregados
-      const pedidosPendientes = pedidos.filter((p: any) => 
-        String(p.repartidor_asignado) === String(repartidor.id) &&
-        !['entregado', 'entregada', 'completed'].includes((p.estado || '').toLowerCase())
-      );
-      // Vector de ruta
-      const ruta_actual = [
-        {
-          tipo: 'origen',
-          lat: ubicacion.lat,
-          lng: ubicacion.lng,
-          label: 'Ubicación actual',
-          status: ubicacion.status,
-          timestamp: ubicacion.timestamp
-        },
-        ...pedidosPendientes.map((p: any) => ({
-          tipo: 'parada',
-          pedido_id: p.id,
-          lat: parseFloat(p.latitud),
-          lng: parseFloat(p.longitud),
-          label: p.direccion,
-          status: p.estado
-        }))
-      ];
+
+      // Intentar cargar ruta desde archivo JSON
+      let ruta_actual = [];
+      try {
+        const fs = require('fs');
+        const path = require('path');
+        const routeFilePath = path.join(__dirname, '../../../client/public/data/routes', `route_${repartidor.id_u}.json`);
+        
+        if (fs.existsSync(routeFilePath)) {
+          const routeData = JSON.parse(fs.readFileSync(routeFilePath, 'utf8'));
+          if (routeData.stops && routeData.stops.length > 0) {
+            // Convertir stops del JSON a formato ruta_actual
+            ruta_actual = routeData.stops.map((stop: any) => {
+              if (stop.type === 'origin') {
+                return {
+                  tipo: 'origen',
+                  lat: stop.lat,
+                  lng: stop.lng,
+                  label: stop.address || 'Ubicación actual',
+                  status: ubicacion.status,
+                  timestamp: ubicacion.timestamp
+                };
+              } else if (stop.type === 'delivery') {
+                // Buscar pedido correspondiente para obtener estado actual
+                const pedido = pedidos.find((p: any) => String(p.id_p) === String(stop.pedido_id));
+                return {
+                  tipo: 'parada',
+                  pedido_id: stop.pedido_id,
+                  lat: stop.lat,
+                  lng: stop.lng,
+                  label: stop.address,
+                  status: pedido ? pedido.sta_p : 'pendiente'
+                };
+              }
+              return null;
+            }).filter(Boolean);
+          }
+        }
+      } catch (routeError) {
+        console.log(`⚠️ No se pudo cargar ruta JSON para repartidor ${repartidor.id_u}:`, (routeError as Error).message);
+        
+        // Fallback: construir ruta desde pedidos asignados (usando nuevo campo del_p)
+        const pedidosPendientes = pedidos.filter((p: any) => 
+          String(p.del_p) === String(repartidor.id_u) &&
+          !['entregado', 'entregada', 'completed'].includes((p.sta_p || '').toLowerCase())
+        );
+        
+        ruta_actual = [
+          {
+            tipo: 'origen',
+            lat: ubicacion.lat,
+            lng: ubicacion.lng,
+            label: 'Ubicación actual',
+            status: ubicacion.status,
+            timestamp: ubicacion.timestamp
+          },
+          ...pedidosPendientes.map((p: any) => ({
+            tipo: 'parada',
+            pedido_id: p.id_p,
+            lat: parseFloat(p.lat || '0'),
+            lng: parseFloat(p.long || '0'),
+            label: p.loc_p || 'Dirección no especificada',
+            status: p.sta_p
+          }))
+        ];
+      }
+
       return {
-        id: repartidor.id,
-        nombre: repartidor.nombre,
-        tipo_vehiculo: repartidor.tipo_vehiculo,
+        id: repartidor.id_u,
+        nombre: repartidor.name_u,
+        tipo_vehiculo: repartidor.vehi_u,
         ubicacion_actual: ubicacion,
         ruta_actual
       };
-    });
+    }));
+
     return res.json(repartidoresLive);
   } catch (error) {
     console.error('❌ Error en /repartidores/live:', error);
@@ -240,35 +348,44 @@ router.post('/:id/complete-delivery', async (req, res) => {
     }
 
     // Cargar datos actuales
-    const [repartidores, pedidos] = await Promise.all([
-      loadRepartidores(),
+    const [users, pedidos] = await Promise.all([
+      loadUsers(),
       loadPedidos()
     ]);
 
-    const repartidor = repartidores.find((r: any) => String(r.id) === String(id));
+    const repartidores = users.filter((u: any) => u.type_u === 'repartidor');
+    const repartidor = repartidores.find((r: any) => String(r.id_u) === String(id));
     if (!repartidor) {
       return res.status(404).json({ error: 'Repartidor no encontrado' });
     }
 
     // Actualizar estado del pedido
-    const pedidoIndex = pedidos.findIndex((p: any) => String(p.id) === String(pedidoId));
+    const pedidoIndex = pedidos.findIndex((p: any) => String(p.id_p) === String(pedidoId));
     if (pedidoIndex === -1) {
       return res.status(404).json({ error: 'Pedido no encontrado' });
     }
 
     pedidos[pedidoIndex] = {
       ...pedidos[pedidoIndex],
-      estado: 'entregado',
+      sta_p: 'entregado',
       fecha_entrega: new Date().toISOString(),
       evidencia_entrega: deliveryEvidence || ''
     };
 
     await savePedidos(pedidos);
 
+    // ✅ NUEVO: Integrar con StatusService para actualización automática
+    try {
+      const { StatusService } = require('../services/statusService');
+      await StatusService.onDeliveryCompleted(Number(id), Number(pedidoId));
+    } catch (statusError) {
+      console.error('⚠️ Error en StatusService, pero entrega se completó:', statusError);
+    }
+
     // Verificar si el repartidor completó toda su ruta
     const pedidosPendientes = pedidos.filter((p: any) => 
-      String(p.repartidor_asignado) === String(id) &&
-      !['entregado', 'entregada', 'completed'].includes((p.estado || '').toLowerCase())
+      String(p.del_p) === String(id) &&
+      !['entregado', 'entregada', 'completed'].includes((p.sta_p || '').toLowerCase())
     );
 
     let message = 'Entrega completada exitosamente';
@@ -292,15 +409,6 @@ router.post('/:id/complete-delivery', async (req, res) => {
         await saveParadasRuta([]);
         message = 'Entrega completada. Ruta vaciada.';
         rutaCompletada = true;
-      }
-      // Actualizar estado del repartidor a disponible
-      const repartidorIndex = repartidores.findIndex((r: any) => String(r.id) === String(id));
-      if (repartidorIndex !== -1) {
-        repartidores[repartidorIndex] = {
-          ...repartidores[repartidorIndex],
-          status: 'disponible'
-        };
-        await saveRepartidores(repartidores);
       }
     }
 
@@ -338,20 +446,24 @@ router.post('/:id/clear-route', async (req, res) => {
       await saveParadasRuta([]);
     }
     // Actualizar estado del repartidor
-    const repartidores = await loadRepartidores();
-    const repartidorIndex = repartidores.findIndex((r: any) => String(r.id) === String(id));
+    const users = await loadUsers();
+    const repartidorIndex = users.findIndex((u: any) => 
+      String(u.id_u) === String(id) && u.type_u === 'repartidor'
+    );
     if (repartidorIndex !== -1) {
-      repartidores[repartidorIndex] = {
-        ...repartidores[repartidorIndex],
-        status: 'disponible'
+      users[repartidorIndex] = {
+        ...users[repartidorIndex],
+        sta_u: 'disponible'
       };
-      await saveRepartidores(repartidores);
+      await saveUsers(users);
     }
+
     return res.json({
       success: true,
-      message: 'Ruta vaciada exitosamente. Repartidor disponible.',
+      message: 'Ruta vaciada exitosamente',
       repartidorId: id
     });
+
   } catch (error) {
     console.error('❌ Error vaciando ruta:', error);
     return res.status(500).json({ error: 'Error interno del servidor' });
@@ -429,15 +541,12 @@ router.post('/:id/update-stop-status', async (req, res) => {
       message = 'Parada actualizada. Ruta completada.';
       rutaCompletada = true;
 
-      // Actualizar estado del repartidor a disponible
-      const repartidores = await loadRepartidores();
-      const repartidorIndex = repartidores.findIndex((r: any) => String(r.id) === String(id));
-      if (repartidorIndex !== -1) {
-        repartidores[repartidorIndex] = {
-          ...repartidores[repartidorIndex],
-          status: 'disponible'
-        };
-        await saveRepartidores(repartidores);
+      // ✅ NUEVO: Integrar con StatusService para actualización automática
+      try {
+        const { StatusService } = require('../services/statusService');
+        await StatusService.onDeliveryCompleted(Number(id), Number(pedidoId));
+      } catch (statusError) {
+        console.error('⚠️ Error en StatusService, pero parada se actualizó:', statusError);
       }
     }
 
@@ -459,18 +568,60 @@ router.post('/:id/update-stop-status', async (req, res) => {
 // GET estado de todos los repartidores
 router.get('/estado', async (_req, res) => {
   try {
-    const repartidores = await loadRepartidores();
+    const users = await loadUsers();
+    const repartidores = users.filter((u: any) => u.type_u === 'repartidor');
     const estadoRepartidores = repartidores.map((repartidor: any) => ({
-      id_repartidor: repartidor.id,
-      estado: repartidor.status || 'disponible',
+      id_repartidor: repartidor.id_u,
+      estado: repartidor.sta_u || 'disponible',
       latitud: repartidor.lat || '19.4326',
-      longitud: repartidor.lng || '-99.1332',
+      longitud: repartidor.lon || '-99.1332',
       ultima_actualizacion: repartidor.ultima_actualizacion || new Date().toISOString()
     }));
 
     return res.json(estadoRepartidores);
   } catch (error) {
     console.error('❌ Error obteniendo estado de repartidores:', error);
+    return res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+// PATCH actualizar estado del repartidor
+router.patch('/:id/status', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { status } = req.body;
+
+    if (!status) {
+      return res.status(400).json({ error: 'status es requerido' });
+    }
+
+    // Cargar usuarios actuales
+    const users = await loadUsers();
+    const repartidorIndex = users.findIndex((u: any) => 
+      String(u.id_u) === String(id) && u.type_u === 'repartidor'
+    );
+    
+    if (repartidorIndex === -1) {
+      return res.status(404).json({ error: 'Repartidor no encontrado' });
+    }
+
+    // Actualizar estado del repartidor
+    users[repartidorIndex] = {
+      ...users[repartidorIndex],
+      sta_u: status,
+      ultima_actualizacion: new Date().toISOString()
+    };
+
+    // Guardar cambios en el CSV
+    await saveUsers(users);
+
+    return res.json({
+      message: 'Estado del repartidor actualizado exitosamente',
+      repartidorId: id,
+      status: status
+    });
+  } catch (error) {
+    console.error('❌ Error actualizando estado del repartidor:', error);
     return res.status(500).json({ error: 'Error interno del servidor' });
   }
 });

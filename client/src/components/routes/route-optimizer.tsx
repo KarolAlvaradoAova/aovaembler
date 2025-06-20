@@ -1,10 +1,11 @@
 import { useState, useEffect } from 'react';
 import { 
   fetchPedidos, 
-  fetchRepartidores, 
   fetchSucursales, 
   optimizeDeliveryRoute,
-  calculateDistance
+  calculateDistance,
+  fetchPedidosFromCSV,
+  fetchUsersFromCSV
 } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -48,12 +49,27 @@ export function RouteOptimizer() {
 
   const loadInitialData = async () => {
     try {
-      const [pedidosData, repartidoresData] = await Promise.all([
-        fetchPedidos(),
-        fetchRepartidores()
+      const [pedidosData, usersData] = await Promise.all([
+        fetchPedidosFromCSV(),
+        fetchUsersFromCSV()
       ]);
       setPedidos(pedidosData);
-      setRepartidores(repartidoresData);
+      
+      // Usar solo datos de usuarios, filtrar repartidores
+      const repartidoresCombinados = usersData
+        .filter(u => u.type_u === 'repartidor')
+        .map(user => ({
+          ...user,
+          // Usar datos del CSV de usuarios
+          nombre: user.name_u,
+          tipo_vehiculo: user.vehi_u,
+          status: user.sta_u,
+          lat: user.lat,
+          lng: user.lon,
+          activo: true // Asumir que todos los repartidores en users.csv están activos
+        }));
+      
+      setRepartidores(repartidoresCombinados);
     } catch (error) {
       console.error('Error cargando datos:', error);
       toast({
@@ -69,17 +85,23 @@ export function RouteOptimizer() {
   // Obtener repartidores disponibles (de cualquier sucursal)
   const getRepartidoresDisponibles = async () => {
     try {
-      const estadoRepartidores = await fetch('/api/repartidores/estado').then(res => res.json());
-      
-      const disponibles = repartidores.filter((repartidor: any) => {
-        const estado = estadoRepartidores.find((e: any) => 
-          Number(e.id_repartidor) === Number(repartidor.id)
+      // Filtrar repartidores que estén activos y disponibles
+      const disponibles = repartidores.filter(r => 
+        r.activo !== false && 
+        (r.status === 'disponible' || r.sta_u === 'disponible')
+      );
+
+      // Verificar que no tengan pedidos asignados actualmente
+      const repartidoresSinPedidos = disponibles.filter(repartidor => {
+        const pedidosAsignados = pedidos.filter(p => 
+          String(p.del_p) === String(repartidor.id_u) && 
+          !['entregado', 'entregada', 'completed'].includes((p.sta_p || '').toLowerCase())
         );
-        return estado && estado.estado === 'disponible';
+        return pedidosAsignados.length === 0;
       });
 
-      setRepartidoresDisponibles(disponibles);
-      return disponibles;
+      setRepartidoresDisponibles(repartidoresSinPedidos);
+      return repartidoresSinPedidos;
     } catch (error) {
       console.error('Error obteniendo repartidores disponibles:', error);
       setRepartidoresDisponibles([]);
@@ -90,7 +112,7 @@ export function RouteOptimizer() {
   // Obtener solo pedidos sin repartidor asignado
   const getPedidosSinRepartidor = () => {
     return pedidos.filter(p => 
-      !p.repartidor_asignado || p.repartidor_asignado === '' || p.repartidor_asignado === null
+      !p.del_p || p.del_p === '' || p.del_p === null || p.del_p === undefined
     );
   };
 
@@ -100,7 +122,7 @@ export function RouteOptimizer() {
     const grouped: { [key: string]: any[] } = {};
     
     pedidosSinRepartidor.forEach(pedido => {
-      const sucursal = pedido.sucursal_asignada || 'Sin sucursal';
+      const sucursal = pedido.suc_p || 'Sin sucursal';
       if (!grouped[sucursal]) {
         grouped[sucursal] = [];
       }
@@ -120,7 +142,7 @@ export function RouteOptimizer() {
 
   const handleSelectAllFromSucursal = (sucursal: string, checked: boolean) => {
     const pedidosSucursal = getPedidosPorSucursal()[sucursal] || [];
-    const idsSucursal = pedidosSucursal.map(p => String(p.id));
+    const idsSucursal = pedidosSucursal.map(p => String(p.id_p));
     
     if (checked) {
       // Agregar todos los pedidos de la sucursal que no estén ya seleccionados
@@ -142,7 +164,7 @@ export function RouteOptimizer() {
   const handleSelectAll = (checked: boolean) => {
     const todosLosPedidos = getPedidosSinRepartidor();
     if (checked) {
-      setSelectedPedidos(todosLosPedidos.map(p => String(p.id)));
+      setSelectedPedidos(todosLosPedidos.map(p => String(p.id_p)));
     } else {
       setSelectedPedidos([]);
     }
@@ -177,7 +199,7 @@ export function RouteOptimizer() {
     try {
       // Obtener los pedidos seleccionados con datos completos
       const pedidosSeleccionados = pedidos.filter(p => 
-        selectedPedidos.includes(String(p.id))
+        selectedPedidos.includes(String(p.id_p))
       );
 
       if (pedidosSeleccionados.length === 0) {
@@ -189,153 +211,91 @@ export function RouteOptimizer() {
         return;
       }
 
+      // Recargar datos de repartidores para obtener el estado más actualizado
+      await loadInitialData();
+      
+      // Obtener repartidores disponibles
+      const repartidoresDisponibles = await getRepartidoresDisponibles();
+
       // Agrupar pedidos por sucursal
       const pedidosPorSucursal: { [key: string]: any[] } = {};
       pedidosSeleccionados.forEach(pedido => {
-        const sucursal = pedido.sucursal_asignada || 'Sin sucursal';
+        const sucursal = pedido.suc_p || 'satelite';
         if (!pedidosPorSucursal[sucursal]) {
           pedidosPorSucursal[sucursal] = [];
         }
         pedidosPorSucursal[sucursal].push(pedido);
       });
 
-      console.log('🔄 Iniciando optimización automática por sucursal:', Object.keys(pedidosPorSucursal));
+      // Variables para tracking de sucursales sin repartidores
+      const sucursalesSinRepartidores: string[] = [];
+      let totalPedidosSinAsignar = 0;
 
-      // Procesar cada sucursal
-      const resultados = [];
-      
+      // Para cada sucursal, buscar repartidores disponibles y asignar pedidos
       for (const [sucursal, pedidosSucursal] of Object.entries(pedidosPorSucursal)) {
-        console.log(`📍 Procesando sucursal: ${sucursal} con ${pedidosSucursal.length} pedidos`);
+        // Buscar repartidores disponibles para esta sucursal específica
+        const repartidoresSucursal = repartidoresDisponibles.filter(r => r.suc_u === sucursal);
+
+        if (repartidoresSucursal.length === 0) {
+          // Si no hay repartidores disponibles para esta sucursal
+          sucursalesSinRepartidores.push(sucursal);
+          totalPedidosSinAsignar += pedidosSucursal.length;
+          continue;
+        }
+
+        // Seleccionar el primer repartidor disponible de la lista (según la lógica solicitada)
+        const repartidorSeleccionado = repartidoresSucursal[0];
         
-        try {
-          // 1. Buscar repartidores disponibles de la sucursal
-          const repartidoresDisponibles = await buscarRepartidoresDisponibles(sucursal);
-          
-          if (repartidoresDisponibles.length === 0) {
-            console.log(`⚠️ No hay repartidores disponibles en ${sucursal}`);
-            resultados.push({
-              sucursal,
-              success: false,
-              message: `No hay repartidores disponibles en ${sucursal}`,
-              pedidos: pedidosSucursal.length
-            });
-            continue;
+        if (repartidorSeleccionado) {
+          try {
+            // Obtener IDs de pedidos de esta sucursal
+            const pedidosIds = pedidosSucursal.map(p => String(p.id_p));
+            
+            // Usar la misma función de asignación que la manual para mantener consistencia
+            await asignarRepartidorAPedidos(pedidosIds, String(repartidorSeleccionado.id_u));
+            
+            console.log(`✅ Asignados ${pedidosIds.length} pedidos de ${sucursal} al repartidor ${repartidorSeleccionado.nombre}`);
+          } catch (error) {
+            console.error(`Error asignando pedidos de ${sucursal}:`, error);
+            // Agregar a la lista de errores pero continuar con otras sucursales
+            sucursalesSinRepartidores.push(sucursal);
+            totalPedidosSinAsignar += pedidosSucursal.length;
           }
-
-          // 1.1. Seleccionar el repartidor más cercano a la sucursal
-          const repartidorSeleccionado = await seleccionarRepartidorMasCercano(
-            repartidoresDisponibles, 
-            sucursal
-          );
-
-          if (!repartidorSeleccionado) {
-            console.log(`⚠️ No se pudo seleccionar repartidor para ${sucursal}`);
-            resultados.push({
-              sucursal,
-              success: false,
-              message: `No se pudo seleccionar repartidor para ${sucursal}`,
-              pedidos: pedidosSucursal.length
-            });
-            continue;
-          }
-
-          console.log(`✅ Repartidor seleccionado: ${repartidorSeleccionado.nombre} (ID: ${repartidorSeleccionado.id})`);
-
-          // 1.1.1. Optimizar ruta usando Google Routes API
-          const pedidosIds = pedidosSucursal.map(p => String(p.id));
-          const rutaOptimizada = await optimizeDeliveryRoute(
-            String(repartidorSeleccionado.id),
-            sucursal,
-            pedidosIds,
-            repartidorSeleccionado.tipo_vehiculo || 'car'
-          );
-
-          console.log('🟡 Respuesta de optimizeDeliveryRoute:', rutaOptimizada);
-
-          // Considerar éxito si success: true o si hay un mensaje de éxito
-          const exito = rutaOptimizada && (rutaOptimizada.success === true || (typeof rutaOptimizada.message === 'string' && rutaOptimizada.message.toLowerCase().includes('exitosa')));
-
-          if (!exito) {
-            console.log(`⚠️ Error optimizando ruta para ${sucursal}`);
-            resultados.push({
-              sucursal,
-              success: false,
-              message: `Error optimizando ruta para ${sucursal}`,
-              pedidos: pedidosSucursal.length
-            });
-            continue;
-          }
-
-          // 1.1.2. Asignar repartidor a cada pedido
-          await asignarRepartidorAPedidos(pedidosIds, String(repartidorSeleccionado.id));
-
-          console.log(`✅ Optimización completada para ${sucursal}`);
-          resultados.push({
-            sucursal,
-            success: true,
-            message: `Optimización exitosa para ${sucursal}`,
-            repartidor: repartidorSeleccionado.nombre,
-            pedidos: pedidosSucursal.length,
-            route: rutaOptimizada.route
-          });
-
-        } catch (error) {
-          console.error(`❌ Error procesando sucursal ${sucursal}:`, error);
-          resultados.push({
-            sucursal,
-            success: false,
-            message: `Error procesando ${sucursal}: ${error instanceof Error ? error.message : 'Error desconocido'}`,
-            pedidos: pedidosSucursal.length
-          });
         }
       }
 
-      // Mostrar resultados
-      const exitosos = resultados.filter(r => r.success);
-      const fallidos = resultados.filter(r => !r.success);
-
-      if (exitosos.length > 0) {
-        toast({
-          title: 'Optimización completada',
-          description: `${exitosos.length} sucursal(es) optimizada(s) exitosamente`,
-        });
-      }
-
-      if (fallidos.length > 0) {
-        toast({
-          title: 'Algunas optimizaciones fallaron',
-          description: `${fallidos.length} sucursal(es) no pudieron ser optimizada(s)`,
-          variant: 'destructive'
-        });
-      }
-
-      if (exitosos.length === 0 && fallidos.length > 0) {
-        // Mostrar diálogo detallado en lugar del toast genérico
-        const sucursalesSinRepartidores = fallidos
-          .filter(r => r.message.includes('No hay repartidores disponibles'))
-          .map(r => r.sucursal);
-        
-        const totalPedidosAfectados = fallidos.reduce((sum, r) => sum + r.pedidos, 0);
-        
+      // Si hay sucursales sin repartidores disponibles, mostrar diálogo
+      if (sucursalesSinRepartidores.length > 0) {
         setNoDriversData({
           sucursales: sucursalesSinRepartidores,
-          totalPedidos: totalPedidosAfectados
+          totalPedidos: totalPedidosSinAsignar
         });
         setShowNoDriversDialog(true);
       }
 
-      // Recargar datos para mostrar los cambios
+      // Recargar datos
       await loadInitialData();
       
-      // Resetear selección
+      // Limpiar selección
       setSelectedPedidos([]);
       setSelectionConfirmed(false);
-
+      
+      // Mostrar mensaje de éxito
+      const sucursalesAsignadas = Object.keys(pedidosPorSucursal).filter(
+        sucursal => !sucursalesSinRepartidores.includes(sucursal)
+      );
+      
+      if (sucursalesAsignadas.length > 0) {
+        toast({
+          title: 'Optimización completada',
+          description: `Pedidos asignados exitosamente a repartidores de ${sucursalesAsignadas.length} sucursal(es)`
+        });
+      }
     } catch (error) {
-      console.error('❌ Error en optimización automática:', error);
+      console.error('Error en optimización automática:', error);
       toast({
         title: 'Error',
-        description: 'Error durante la optimización automática',
+        description: 'No se pudo completar la optimización automática',
         variant: 'destructive'
       });
     } finally {
@@ -343,127 +303,20 @@ export function RouteOptimizer() {
     }
   };
 
-  // Función auxiliar para buscar repartidores disponibles por sucursal
-  const buscarRepartidoresDisponibles = async (sucursal: string): Promise<any[]> => {
-    try {
-      // Cargar repartidores y su estado
-      const [repartidores, estadoRepartidores] = await Promise.all([
-        fetchRepartidores(),
-        fetch('/api/repartidores/estado').then(res => res.json())
-      ]);
-
-      // Filtrar repartidores disponibles y de la sucursal
-      const disponibles = repartidores.filter((repartidor: any) => {
-        const estado = estadoRepartidores.find((e: any) => 
-          Number(e.id_repartidor) === Number(repartidor.id)
-        );
-        // Verificar si está disponible y su sucursal_base coincide
-        return estado && estado.estado === 'disponible' && repartidor.sucursal_base === sucursal;
-      });
-
-      console.log(`🔍 Repartidores disponibles para ${sucursal}:`, disponibles.length);
-      return disponibles;
-    } catch (error) {
-      console.error('❌ Error buscando repartidores disponibles:', error);
-      return [];
-    }
-  };
-
-  // Función auxiliar para seleccionar el repartidor más cercano a la sucursal
-  const seleccionarRepartidorMasCercano = async (repartidores: any[], sucursal: string): Promise<any | null> => {
-    try {
-      // Obtener coordenadas de la sucursal
-      const sucursales = await fetchSucursales();
-      const sucursalData = sucursales.find((s: any) => 
-        s.nombre.toLowerCase() === sucursal.toLowerCase()
-      );
-
-      if (!sucursalData) {
-        console.log(`⚠️ No se encontraron coordenadas para la sucursal ${sucursal}`);
-        return repartidores[0]; // Retornar el primero como fallback
-      }
-
-      const sucursalCoords = {
-        lat: Number(sucursalData.latitud),
-        lng: Number(sucursalData.longitud)
-      };
-
-      // Obtener estado de repartidores para sus ubicaciones actuales
-      const estadoRepartidores = await fetch('/api/repartidores/estado').then(res => res.json());
-
-      // Calcular distancia de cada repartidor a la sucursal
-      const repartidoresConDistancia = repartidores.map(repartidor => {
-        const estado = estadoRepartidores.find((e: any) => 
-          Number(e.id_repartidor) === Number(repartidor.id)
-        );
-
-        if (!estado) {
-          return { ...repartidor, distancia: Infinity };
-        }
-
-        const repartidorCoords = {
-          lat: Number(estado.latitud),
-          lng: Number(estado.longitud)
-        };
-
-        const distancia = calculateDistance(sucursalCoords, repartidorCoords);
-        return { ...repartidor, distancia };
-      });
-
-      // Ordenar por distancia y retornar el más cercano
-      repartidoresConDistancia.sort((a, b) => a.distancia - b.distancia);
-      
-      console.log(`📍 Repartidor más cercano a ${sucursal}: ${repartidoresConDistancia[0]?.nombre} (${repartidoresConDistancia[0]?.distancia.toFixed(2)} km)`);
-      
-      return repartidoresConDistancia[0] || null;
-    } catch (error) {
-      console.error('❌ Error seleccionando repartidor más cercano:', error);
-      return repartidores[0] || null; // Fallback al primer repartidor disponible
-    }
-  };
-
-  // Función auxiliar para asignar repartidor a pedidos
-  const asignarRepartidorAPedidos = async (pedidosIds: string[], repartidorId: string): Promise<void> => {
-    try {
-      // Actualizar cada pedido con el repartidor asignado
-      const actualizaciones = pedidosIds.map(async (pedidoId) => {
-        const response = await fetch(`/api/pedidos/${pedidoId}`, {
-          method: 'PATCH',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            repartidor_asignado: repartidorId,
-            estado: 'en_ruta'
-          })
-        });
-
-        if (!response.ok) {
-          throw new Error(`Error actualizando pedido ${pedidoId}`);
-        }
-
-        return response.json();
-      });
-
-      await Promise.all(actualizaciones);
-      console.log(`✅ Repartidor ${repartidorId} asignado a ${pedidosIds.length} pedidos`);
-    } catch (error) {
-      console.error('❌ Error asignando repartidor a pedidos:', error);
-      throw error;
-    }
-  };
-
   const handleAssignManual = async () => {
     setAssigningManual(true);
     
     try {
+      // Recargar datos de repartidores para obtener el estado más actualizado
+      await loadInitialData();
+      
       // Obtener repartidores disponibles
       const disponibles = await getRepartidoresDisponibles();
       
       if (disponibles.length === 0) {
         toast({
           title: 'Sin repartidores disponibles',
-          description: 'No hay repartidores disponibles para asignar rutas',
+          description: 'No hay repartidores disponibles para asignar rutas. Verifica que los repartidores estén activos y con estado "disponible".',
           variant: 'destructive'
         });
         return;
@@ -487,19 +340,10 @@ export function RouteOptimizer() {
   };
 
   const handleConfirmManualAssignment = async () => {
-    if (!selectedRepartidor) {
+    if (!selectedRepartidor || orderedPedidos.length === 0) {
       toast({
-        title: 'Repartidor no seleccionado',
-        description: 'Debes seleccionar un repartidor para continuar',
-        variant: 'destructive'
-      });
-      return;
-    }
-
-    if (orderedPedidos.length === 0) {
-      toast({
-        title: 'Sin pedidos ordenados',
-        description: 'Debes tener al menos un pedido en el orden',
+        title: 'Error',
+        description: 'Selecciona un repartidor y ordena los pedidos',
         variant: 'destructive'
       });
       return;
@@ -508,29 +352,28 @@ export function RouteOptimizer() {
     setAssigningManual(true);
 
     try {
-      // Asignar repartidor a los pedidos en el orden especificado
+      // Asignar pedidos al repartidor en el orden especificado
       await asignarRepartidorAPedidos(orderedPedidos, selectedRepartidor);
       
-      toast({
-        title: 'Asignación exitosa',
-        description: `${orderedPedidos.length} pedidos asignados al repartidor`,
-      });
-
-      // Limpiar estado
+      // Recargar datos
+      await loadInitialData();
+      
+      // Limpiar selección
       setSelectedPedidos([]);
       setSelectionConfirmed(false);
       setShowManualAssignmentDialog(false);
-      setSelectedRepartidor('');
       setOrderedPedidos([]);
-
-      // Recargar datos
-      await loadInitialData();
-
+      setSelectedRepartidor('');
+      
+      toast({
+        title: 'Asignación completada',
+        description: 'Los pedidos han sido asignados al repartidor seleccionado y se mantienen como pendiente para surtido'
+      });
     } catch (error) {
       console.error('Error en asignación manual:', error);
       toast({
         title: 'Error',
-        description: 'Error al asignar pedidos al repartidor',
+        description: 'No se pudo completar la asignación manual',
         variant: 'destructive'
       });
     } finally {
@@ -573,31 +416,175 @@ export function RouteOptimizer() {
 
   const getEstadoColor = (estado: string) => {
     switch (estado) {
-      case 'pendiente':
-        return 'bg-yellow-500 text-black';
-      case 'surtido':
-        return 'bg-blue-500 text-white';
-      case 'en_ruta':
-        return 'bg-orange-500 text-white';
       case 'entregado':
-        return 'bg-green-500 text-white';
+        return 'bg-green-500/20 text-green-400 border-green-500/30';
+      case 'en_ruta':
+        return 'bg-yellow-500/20 text-yellow-400 border-yellow-500/30';
+      case 'pendiente':
+        return 'bg-blue-500/20 text-blue-400 border-blue-500/30';
       default:
-        return 'bg-gray-500 text-white';
+        return 'bg-gray-500/20 text-gray-400 border-gray-500/30';
     }
   };
 
   const getEstadoIcon = (estado: string) => {
     switch (estado) {
-      case 'pendiente':
-        return <AlertCircle className="w-4 h-4" />;
-      case 'surtido':
-        return <Package className="w-4 h-4" />;
-      case 'en_ruta':
-        return <Route className="w-4 h-4" />;
       case 'entregado':
-        return <CheckCircle className="w-4 h-4" />;
+        return <CheckCircle className="w-3 h-3" />;
+      case 'en_ruta':
+        return <Route className="w-3 h-3" />;
+      case 'pendiente':
+        return <Package className="w-3 h-3" />;
       default:
-        return <Package className="w-4 h-4" />;
+        return <AlertCircle className="w-3 h-3" />;
+    }
+  };
+
+  const getEstadoText = (estado: string) => {
+    switch (estado) {
+      case 'pendiente':
+        return 'Pendiente';
+      case 'surtido':
+        return 'Surtido';
+      case 'recogido':
+        return 'Recogido';
+      case 'en_ruta':
+        return 'En ruta';
+      case 'entregado':
+        return 'Entregado';
+      default:
+        return estado;
+    }
+  };
+
+  const asignarRepartidorAPedidos = async (pedidosIds: string[], repartidorId: string): Promise<void> => {
+    try {
+      // Actualizar el estado de los pedidos en el CSV (mantener como pendiente)
+      const pedidosActualizados = pedidos.map(p => {
+        if (pedidosIds.includes(String(p.id_p))) {
+          return {
+            ...p,
+            del_p: repartidorId,
+            // Mantener como pendiente para que el almacenista lo surta
+            sta_p: 'pendiente'
+          };
+        }
+        return p;
+      });
+
+      // Actualizar el estado del repartidor en el CSV
+      const repartidoresActualizados = repartidores.map(r => {
+        if (String(r.id_u) === repartidorId) {
+          return {
+            ...r,
+            sta_u: 'en_ruta',
+            status: 'en_ruta'
+          };
+        }
+        return r;
+      });
+
+      setPedidos(pedidosActualizados);
+      setRepartidores(repartidoresActualizados);
+
+      // Crear ruta manual con el orden especificado por el usuario
+      try {
+        const repartidor = repartidores.find(r => String(r.id_u) === repartidorId);
+        const pedidosAsignados = pedidos.filter(p => pedidosIds.includes(String(p.id_p)));
+        
+        // Determinar sucursal de origen (usar la más común entre los pedidos asignados)
+        const sucursalConteo: { [key: string]: number } = {};
+        pedidosAsignados.forEach(pedido => {
+          const sucursal = pedido.suc_p || 'satelite';
+          sucursalConteo[sucursal] = (sucursalConteo[sucursal] || 0) + 1;
+        });
+        const sucursalOrigen = Object.keys(sucursalConteo).reduce((a, b) => 
+          sucursalConteo[a] > sucursalConteo[b] ? a : b
+        );
+
+        // Crear request para la ruta manual
+        const routeRequest = {
+          repartidor_id: Number(repartidorId),
+          sucursal_origen: sucursalOrigen,
+          pedido_ids: pedidosIds.map(id => Number(id)),
+          vehicle_type: repartidor?.tipo_vehiculo || 'car',
+          optimization_method: 'manual', // Indicar que es asignación manual
+          manual_order: pedidosIds // Pasar el orden específico del usuario
+        };
+
+        // Crear la ruta manual usando el servicio de rutas
+        const response = await fetch('/api/routes/manual-assign', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(routeRequest)
+        });
+
+        if (!response.ok) {
+          throw new Error('Error creando ruta manual');
+        }
+
+        console.log('✅ Ruta manual creada exitosamente');
+        
+        // **NUEVO: Sincronizar ruta para asegurar consistencia**
+        try {
+          const syncResponse = await fetch(`/api/routes/sync/${repartidorId}`, {
+            method: 'POST'
+          });
+          if (syncResponse.ok) {
+            console.log(`✅ Ruta del repartidor ${repartidorId} sincronizada exitosamente.`);
+          } else {
+            console.warn(`⚠️ No se pudo sincronizar la ruta del repartidor ${repartidorId}.`);
+          }
+        } catch (syncError) {
+          console.error('Error sincronizando ruta:', syncError);
+        }
+
+      } catch (routeError) {
+        console.error('Error creando ruta manual:', routeError);
+        // Continuar aunque falle la creación de la ruta
+      }
+
+      // Guardar cambios en el servidor
+      try {
+        // Actualizar pedidos en el servidor (mantener como pendiente)
+        await Promise.all(pedidosIds.map(async (pedidoId) => {
+          const pedido = pedidos.find(p => String(p.id_p) === pedidoId);
+          if (pedido) {
+            await fetch(`/api/pedidos/${pedidoId}`, {
+              method: 'PATCH',
+              headers: {
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify({
+                del_p: repartidorId,
+                sta_p: 'pendiente' // Mantener como pendiente
+              })
+            });
+          }
+        }));
+
+        // Actualizar estado del repartidor en el servidor
+        const repartidor = repartidores.find(r => String(r.id_u) === repartidorId);
+        if (repartidor) {
+          await fetch(`/api/repartidores/${repartidorId}/status`, {
+            method: 'PATCH',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              status: 'en_ruta'
+            })
+          });
+        }
+      } catch (serverError) {
+        console.error('Error actualizando datos en el servidor:', serverError);
+        // Continuar aunque falle la actualización del servidor
+      }
+    } catch (error) {
+      console.error('Error asignando repartidor a pedidos:', error);
+      throw error;
     }
   };
 
@@ -753,8 +740,8 @@ export function RouteOptimizer() {
                     <div>
                       <h3 className="text-xl font-bold text-white mb-2">Asignación Manual</h3>
                       <p className="text-sm text-muted mb-4">
-                        Asigna manualmente los pedidos a repartidores específicos 
-                        y configura las rutas según tus preferencias.
+                        Asigna manualmente los pedidos a repartidores específicos que estén disponibles. 
+                        El sistema consulta automáticamente los usuarios y estados de repartidores activos.
                       </p>
                       <Button 
                         onClick={handleAssignManual}
@@ -783,7 +770,8 @@ export function RouteOptimizer() {
               <p className="text-xs text-muted">
                 💡 <strong>Optimización Automática:</strong> Recomendado para la mayoría de casos. 
                 <br />
-                💡 <strong>Asignación Manual:</strong> Útil cuando necesitas control específico sobre repartidores y rutas.
+                💡 <strong>Asignación Manual:</strong> Consulta automáticamente usuarios y estados de repartidores disponibles. 
+                Solo muestra repartidores activos con estado "disponible" y sin pedidos asignados.
               </p>
                 </div>
             </CardContent>
@@ -816,7 +804,7 @@ export function RouteOptimizer() {
 
           {/* Pedidos por sucursal */}
           {Object.entries(pedidosPorSucursal).map(([sucursal, pedidosSucursal]) => {
-            const idsSucursal = pedidosSucursal.map(p => String(p.id));
+            const idsSucursal = pedidosSucursal.map(p => String(p.id_p));
             const seleccionadosSucursal = selectedPedidos.filter(id => idsSucursal.includes(id));
             const todosSeleccionados = seleccionadosSucursal.length === idsSucursal.length && idsSucursal.length > 0;
             
@@ -844,46 +832,46 @@ export function RouteOptimizer() {
                 <div className="ml-8 space-y-2">
                   {pedidosSucursal.map((pedido) => (
                   <div 
-                    key={pedido.id} 
+                    key={pedido.id_p} 
                       className="flex items-start space-x-3 p-3 bg-zinc-800 rounded-lg hover:bg-zinc-700 transition-colors"
                   >
                     <Checkbox
-                      checked={selectedPedidos.includes(String(pedido.id))}
+                      checked={selectedPedidos.includes(String(pedido.id_p))}
                       onCheckedChange={(checked) => 
-                        handlePedidoToggle(String(pedido.id), checked as boolean)
+                        handlePedidoToggle(String(pedido.id_p), checked as boolean)
                       }
                         className="mt-1 data-[state=checked]:bg-yellow-400 data-[state=checked]:border-yellow-400"
                     />
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center justify-between mb-1">
                         <span className="font-medium text-white">
-                          Pedido #{pedido.id}
+                          Pedido #{pedido.id_p}
                         </span>
                         <Badge 
-                            className={`text-xs ${getEstadoColor(pedido.estado)}`}
+                          className={`text-xs ${
+                            pedido.sta_p === 'entregado' ? 'bg-green-500/20 text-green-400 border-green-500/30' :
+                            pedido.sta_p === 'en_ruta' ? 'bg-yellow-500/20 text-yellow-400 border-yellow-500/30' :
+                            'bg-blue-500/20 text-blue-400 border-blue-500/30'
+                          }`}
                         >
-                            <div className="flex items-center space-x-1">
-                              {getEstadoIcon(pedido.estado)}
-                              <span>{pedido.estado}</span>
-                            </div>
+                          {getEstadoText(pedido.sta_p)}
                         </Badge>
                       </div>
-                      <p className="text-sm text-muted truncate">
-                          {pedido.productos}
+                      <div className="space-y-1">
+                        <p className="text-sm text-muted truncate">
+                          <span className="font-medium">Productos:</span> {pedido.prod_p}
                         </p>
-                        <div className="flex items-center space-x-2 mt-1">
-                          <MapPin className="w-3 h-3 text-yellow-400" />
-                          <p className="text-xs text-yellow-400 truncate">
-                        {pedido.direccion}
-                      </p>
-                        </div>
-                        <div className="text-xs text-zinc-500 mt-1">
-                          {pedido.latitud}, {pedido.longitud}
-                            </div>
-                        </div>
+                        <p className="text-sm text-muted truncate">
+                          <span className="font-medium">Dirección:</span> {pedido.loc_p}
+                        </p>
+                        <p className="text-sm text-muted">
+                          <span className="font-medium">Sucursal:</span> {pedido.suc_p}
+                        </p>
                       </div>
-                    ))}
+                    </div>
                   </div>
+                ))}
+                </div>
               </div>
             );
           })}
@@ -919,7 +907,7 @@ export function RouteOptimizer() {
             <div className="space-y-3">
               <h4 className="font-medium text-white flex items-center">
                 <User className="w-4 h-4 mr-2" />
-                Seleccionar Repartidor
+                Seleccionar Repartidor Disponible
               </h4>
               <Select value={selectedRepartidor} onValueChange={setSelectedRepartidor}>
                 <SelectTrigger className="bg-zinc-800 border-blue-400/30 text-white">
@@ -928,8 +916,8 @@ export function RouteOptimizer() {
                 <SelectContent className="bg-zinc-800 border-blue-400/30">
                   {repartidoresDisponibles.map((repartidor: any) => (
                     <SelectItem 
-                      key={repartidor.id} 
-                      value={String(repartidor.id)}
+                      key={repartidor.id_u} 
+                      value={String(repartidor.id_u)}
                       className="text-white hover:bg-zinc-700"
                     >
                       <div className="flex items-center space-x-2">
@@ -938,16 +926,31 @@ export function RouteOptimizer() {
                         <Badge variant="outline" className="text-xs">
                           {repartidor.tipo_vehiculo}
                         </Badge>
-                        {repartidor.sucursal_base && (
+                        {repartidor.suc_u && (
                           <Badge variant="secondary" className="text-xs">
-                            {repartidor.sucursal_base}
+                            {repartidor.suc_u}
                           </Badge>
                         )}
+                        <Badge variant="default" className="text-xs bg-green-500/20 text-green-400">
+                          Disponible
+                        </Badge>
                       </div>
                     </SelectItem>
                   ))}
                 </SelectContent>
               </Select>
+              
+              {repartidoresDisponibles.length === 0 && (
+                <div className="text-center py-4">
+                  <AlertCircle className="w-8 h-8 text-red-400 mx-auto mb-2" />
+                  <p className="text-red-400 text-sm">
+                    No hay repartidores disponibles en este momento
+                  </p>
+                  <p className="text-zinc-500 text-xs mt-1">
+                    Los repartidores deben estar activos y con estado "disponible"
+                  </p>
+                </div>
+              )}
             </div>
 
             {/* Orden de Pedidos */}
@@ -960,7 +963,7 @@ export function RouteOptimizer() {
               {/* Lista de pedidos ordenados */}
               <div className="space-y-2 max-h-60 overflow-y-auto">
                 {orderedPedidos.map((pedidoId, index) => {
-                  const pedido = pedidos.find(p => String(p.id) === pedidoId);
+                  const pedido = pedidos.find(p => String(p.id_p) === pedidoId);
                   if (!pedido) return null;
                   
                   return (
@@ -992,20 +995,20 @@ export function RouteOptimizer() {
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center justify-between mb-1">
                           <span className="font-medium text-white">
-                            #{index + 1} - Pedido #{pedido.id}
+                            #{index + 1} - Pedido #{pedido.id_p}
                           </span>
-                          <Badge className={`text-xs ${getEstadoColor(pedido.estado)}`}>
-                            {getEstadoIcon(pedido.estado)}
-                            <span className="ml-1">{pedido.estado}</span>
+                          <Badge className={`text-xs ${getEstadoColor(pedido.sta_p)}`}>
+                            {getEstadoIcon(pedido.sta_p)}
+                            <span className="ml-1">{pedido.sta_p}</span>
                           </Badge>
                         </div>
                         <p className="text-sm text-muted truncate">
-                          {pedido.productos}
+                          {pedido.prod_p}
                         </p>
                         <div className="flex items-center space-x-2 mt-1">
                           <MapPin className="w-3 h-3 text-blue-400" />
                           <p className="text-xs text-blue-400 truncate">
-                            {pedido.direccion}
+                            {pedido.loc_p}
                           </p>
                         </div>
                       </div>
@@ -1030,7 +1033,7 @@ export function RouteOptimizer() {
                   {selectedPedidos
                     .filter(pedidoId => !orderedPedidos.includes(pedidoId))
                     .map((pedidoId) => {
-                      const pedido = pedidos.find(p => String(p.id) === pedidoId);
+                      const pedido = pedidos.find(p => String(p.id_p) === pedidoId);
                       if (!pedido) return null;
                       
                       return (
@@ -1039,8 +1042,8 @@ export function RouteOptimizer() {
                           className="flex items-center space-x-3 p-2 bg-zinc-800/50 rounded-lg hover:bg-zinc-700/50 transition-colors"
                         >
                           <div className="flex-1 min-w-0">
-                            <span className="text-sm text-white">Pedido #{pedido.id}</span>
-                            <p className="text-xs text-muted truncate">{pedido.productos}</p>
+                            <span className="text-sm text-white">Pedido #{pedido.id_p}</span>
+                            <p className="text-xs text-muted truncate">{pedido.prod_p}</p>
                           </div>
                           <Button
                             size="sm"

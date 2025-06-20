@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useContext, useCallback } from 'react';
 import { MoreVertical, Home, Truck, Package, MapPin, Clock, Check, Copy, Search, Filter } from 'lucide-react';
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from '@/components/ui/dropdown-menu';
-import { fetchPedidos, fetchAlmacenistas, updatePedidoStatus } from '@/lib/utils';
+import { fetchPedidosFromCSV, fetchUsersFromCSV, updatePedidoStatus } from '@/lib/utils';
 import { useToast } from '@/hooks/use-toast';
 import { Table, TableHeader, TableBody, TableHead, TableRow, TableCell } from '@/components/ui/table';
 import { Input } from '@/components/ui/input';
@@ -21,6 +21,7 @@ export function AlmacenistaView() {
 
   const { toast } = useToast();
   const [pedidos, setPedidos] = useState<any[]>([]);
+  const [repartidores, setRepartidores] = useState<any[]>([]);
   const [almacenista, setAlmacenista] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState<number | null>(null);
@@ -28,44 +29,53 @@ export function AlmacenistaView() {
   const [showProductDetails, setShowProductDetails] = useState<{ [key: string]: boolean }>({});
   const [inventario, setInventario] = useState<any[]>([]);
   const [searchTerm, setSearchTerm] = useState('');
-  const [filterStatus, setFilterStatus] = useState<'all' | 'pendiente' | 'surtido'>('all');
+  const [filterStatus, setFilterStatus] = useState<'all' | 'pendiente' | 'surtido' | 'recogido' | 'en_ruta' | 'entregado'>('all');
 
   // Cargar pedidos y almacenista
   const loadPedidos = useCallback(async () => {
     try {
-      const [pedidosData, almacenistasData] = await Promise.all([
-        fetchPedidos(),
-        fetchAlmacenistas(),
+      const [pedidosData, usersData] = await Promise.all([
+        fetchPedidosFromCSV(),
+        fetchUsersFromCSV(),
       ]);
-      // Buscar almacenista por nombre
-      const alm = almacenistasData.find((a: any) => a.nombre === user?.nombre);
+      
+      // Buscar almacenista por id_u
+      const alm = usersData.find((u: any) => u.id_u === user?.id_u && u.type_u === 'almacenista');
       setAlmacenista(alm);
+      
+      // Filtrar repartidores de usersData
+      const repartidoresData = usersData.filter((u: any) => u.type_u === 'repartidor');
+      setRepartidores(repartidoresData);
+      
       if (alm) {
-        // Filtrar pedidos asignados a la sucursal del almacenista y solo los de estado pendiente o surtido
-        const pedidosFiltrados = pedidosData.filter((p: any) => 
-          String(p.sucursal_asignada).toLowerCase().trim() === String(alm.sucursal).toLowerCase().trim() &&
-          (p.estado === 'pendiente' || p.estado === 'surtido')
-        );
+        // Filtrar pedidos por la sucursal del almacenista - mostrar TODOS los pedidos de su sucursal
+        const pedidosFiltrados = pedidosData.filter((p: any) => {
+          const sucursalCoincide = String(p.suc_p).toLowerCase().trim() === String(alm.suc_u).toLowerCase().trim();
+          
+          return sucursalCoincide; // Mostrar todos los pedidos de la sucursal
+        });
+        
         setPedidos(pedidosFiltrados);
       } else {
         setPedidos([]);
       }
     } catch (error) {
+      console.error('❌ Error cargando datos:', error);
       toast({ title: 'Error', description: 'No se pudieron cargar los pedidos', variant: 'destructive' });
       setPedidos([]);
     }
-  }, [user?.nombre, toast]);
+  }, [user?.id_u, toast]);
 
   useEffect(() => {
     const load = async () => {
       setLoading(true);
-      if (user?.nombre) {
+      if (user?.id_u) {
         await loadPedidos();
       }
       setLoading(false);
     };
     load();
-  }, [user?.nombre, loadPedidos]);
+  }, [user?.id_u, loadPedidos]);
 
   // --- Hook para cargar inventario CSV como objeto ---
   useEffect(() => {
@@ -103,6 +113,9 @@ export function AlmacenistaView() {
     switch (estado) {
       case 'pendiente': return 'bg-yellow-500/20 text-yellow-400 border-yellow-500/30';
       case 'surtido': return 'bg-green-500/20 text-green-400 border-green-500/30';
+      case 'recogido': return 'bg-blue-500/20 text-blue-400 border-blue-500/30';
+      case 'en_ruta': return 'bg-orange-500/20 text-orange-400 border-orange-500/30';
+      case 'entregado': return 'bg-purple-500/20 text-purple-400 border-purple-500/30';
       default: return 'bg-blue-500/20 text-blue-400 border-blue-500/30';
     }
   };
@@ -111,6 +124,9 @@ export function AlmacenistaView() {
     switch (estado) {
       case 'pendiente': return 'Pendiente';
       case 'surtido': return 'Surtido';
+      case 'recogido': return 'Recogido';
+      case 'en_ruta': return 'En ruta';
+      case 'entregado': return 'Entregado';
       default: return 'Desconocido';
     }
   };
@@ -123,8 +139,59 @@ export function AlmacenistaView() {
     }
   };
 
+  // Función para parsear el campo prod_p (formato: "1x11427512300-100,2x2711800109")
+  const parseProdP = (prodP: string) => {
+    if (!prodP) return [];
+    
+    try {
+      // Separar por comas y procesar cada producto
+      const productos = prodP.split(',').map(item => {
+        const trimmed = item.trim();
+        // Buscar el patrón cantidadxcódigo
+        const match = trimmed.match(/^(\d+)x(.+)$/);
+        if (match) {
+          return {
+            cantidad: parseInt(match[1]),
+            codigo: match[2].trim()
+          };
+        }
+        return null;
+      }).filter(Boolean);
+      
+      return productos;
+    } catch (error) {
+      console.error('Error parseando prod_p:', error);
+      return [];
+    }
+  };
+
+  // Función para contar el total de productos en un pedido
+  const contarProductosPedido = (pedido: any) => {
+    // Primero intentar con prode_p (JSON detallado)
+    if (pedido.prode_p) {
+      try {
+        const productos = JSON.parse(pedido.prode_p);
+        return productos.reduce((total: number, prod: any) => total + (prod.cantidad || 0), 0);
+      } catch {
+        // Si falla, usar prod_p
+      }
+    }
+    
+    // Usar prod_p como fallback
+    const productos = parseProdP(pedido.prod_p);
+    return productos.reduce((total, prod) => total + (prod?.cantidad || 0), 0);
+  };
+
   const toggleProductDetails = (pedidoId: string) => {
     setShowProductDetails(prev => ({ ...prev, [pedidoId]: !prev[pedidoId] }));
+  };
+
+  // Función para obtener el nombre del repartidor por ID
+  const getRepartidorNombre = (repartidorId: string | number) => {
+    if (!repartidorId || repartidorId === '') return 'Sin asignar';
+    
+    const repartidor = repartidores.find((r: any) => String(r.id_u) === String(repartidorId));
+    return repartidor ? repartidor.name_u : `Repartidor ${repartidorId}`;
   };
 
   // Función para obtener ubicación en almacén
@@ -144,16 +211,27 @@ export function AlmacenistaView() {
   // Filtrar pedidos
   const filteredPedidos = pedidos.filter(pedido => {
     const matchesSearch = searchTerm === '' || 
-      String(pedido.id).includes(searchTerm) ||
-      pedido.productos?.toLowerCase().includes(searchTerm.toLowerCase());
+      String(pedido.id_p).includes(searchTerm) ||
+      pedido.prod_p?.toLowerCase().includes(searchTerm.toLowerCase());
     
-    const matchesStatus = filterStatus === 'all' || pedido.estado === filterStatus;
+    const matchesStatus = filterStatus === 'all' || pedido.sta_p === filterStatus;
     
     return matchesSearch && matchesStatus;
+  }).sort((a, b) => {
+    // Ordenar: pendientes primero, luego por ID
+    const estadoOrder = { pendiente: 0, surtido: 1, recogido: 2, en_ruta: 3, entregado: 4 };
+    const orderA = estadoOrder[a.sta_p as keyof typeof estadoOrder] ?? 5;
+    const orderB = estadoOrder[b.sta_p as keyof typeof estadoOrder] ?? 5;
+    
+    if (orderA !== orderB) return orderA - orderB;
+    return Number(a.id_p) - Number(b.id_p);
   });
 
-  const pedidosPendientes = pedidos.filter(p => p.estado === 'pendiente').length;
-  const pedidosSurtidos = pedidos.filter(p => p.estado === 'surtido').length;
+  const pedidosPendientes = pedidos.filter(p => p.sta_p === 'pendiente').length;
+  const pedidosSurtidos = pedidos.filter(p => p.sta_p === 'surtido').length;
+  const pedidosRecogidos = pedidos.filter(p => p.sta_p === 'recogido').length;
+  const pedidosEnRuta = pedidos.filter(p => p.sta_p === 'en_ruta').length;
+  const pedidosEntregados = pedidos.filter(p => p.sta_p === 'entregado').length;
 
   // --- UI ---
   return (
@@ -163,7 +241,7 @@ export function AlmacenistaView() {
         <div>
           <h1 className="text-3xl font-bold text-gradient">Gestión de Almacén</h1>
           <p className="text-muted mt-1">
-            {almacenista ? `${almacenista.nombre} - Sucursal ${almacenista.sucursal}` : 'Panel de almacén'}
+            {almacenista ? `${almacenista.name_u} - Sucursal ${almacenista.suc_u}` : 'Panel de almacén'}
           </p>
         </div>
         <div className="flex items-center space-x-4">
@@ -175,44 +253,72 @@ export function AlmacenistaView() {
       </div>
 
       {/* Stats Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+      <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
         <Card className="bg-gradient-to-br from-yellow-500/10 to-yellow-600/5 border-yellow-500/20">
-          <CardContent className="p-6">
+          <CardContent className="p-4">
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-sm font-medium text-muted">Pedidos Pendientes</p>
-                <p className="text-3xl font-bold text-yellow-400">{pedidosPendientes}</p>
+                <p className="text-xs font-medium text-muted">Pendientes</p>
+                <p className="text-2xl font-bold text-yellow-400">{pedidosPendientes}</p>
               </div>
-              <div className="w-12 h-12 bg-yellow-500/20 rounded-lg flex items-center justify-center">
-                <Package className="w-6 h-6 text-yellow-400" />
+              <div className="w-10 h-10 bg-yellow-500/20 rounded-lg flex items-center justify-center">
+                <Package className="w-5 h-5 text-yellow-400" />
               </div>
             </div>
           </CardContent>
         </Card>
 
         <Card className="bg-gradient-to-br from-green-500/10 to-green-600/5 border-green-500/20">
-          <CardContent className="p-6">
+          <CardContent className="p-4">
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-sm font-medium text-muted">Pedidos Surtidos</p>
-                <p className="text-3xl font-bold text-green-400">{pedidosSurtidos}</p>
+                <p className="text-xs font-medium text-muted">Surtidos</p>
+                <p className="text-2xl font-bold text-green-400">{pedidosSurtidos}</p>
               </div>
-              <div className="w-12 h-12 bg-green-500/20 rounded-lg flex items-center justify-center">
-                <Check className="w-6 h-6 text-green-400" />
+              <div className="w-10 h-10 bg-green-500/20 rounded-lg flex items-center justify-center">
+                <Check className="w-5 h-5 text-green-400" />
               </div>
             </div>
           </CardContent>
         </Card>
 
         <Card className="bg-gradient-to-br from-blue-500/10 to-blue-600/5 border-blue-500/20">
-          <CardContent className="p-6">
+          <CardContent className="p-4">
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-sm font-medium text-muted">Total Pedidos</p>
-                <p className="text-3xl font-bold text-blue-400">{pedidos.length}</p>
+                <p className="text-xs font-medium text-muted">Recogidos</p>
+                <p className="text-2xl font-bold text-blue-400">{pedidosRecogidos}</p>
               </div>
-              <div className="w-12 h-12 bg-blue-500/20 rounded-lg flex items-center justify-center">
-                <Home className="w-6 h-6 text-blue-400" />
+              <div className="w-10 h-10 bg-blue-500/20 rounded-lg flex items-center justify-center">
+                <Truck className="w-5 h-5 text-blue-400" />
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card className="bg-gradient-to-br from-orange-500/10 to-orange-600/5 border-orange-500/20">
+          <CardContent className="p-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-xs font-medium text-muted">En ruta</p>
+                <p className="text-2xl font-bold text-orange-400">{pedidosEnRuta}</p>
+              </div>
+              <div className="w-10 h-10 bg-orange-500/20 rounded-lg flex items-center justify-center">
+                <MapPin className="w-5 h-5 text-orange-400" />
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card className="bg-gradient-to-br from-purple-500/10 to-purple-600/5 border-purple-500/20">
+          <CardContent className="p-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-xs font-medium text-muted">Entregados</p>
+                <p className="text-2xl font-bold text-purple-400">{pedidosEntregados}</p>
+              </div>
+              <div className="w-10 h-10 bg-purple-500/20 rounded-lg flex items-center justify-center">
+                <Home className="w-5 h-5 text-purple-400" />
               </div>
             </div>
           </CardContent>
@@ -259,6 +365,30 @@ export function AlmacenistaView() {
               >
                 Surtidos ({pedidosSurtidos})
               </Button>
+              <Button
+                variant={filterStatus === 'recogido' ? 'default' : 'outline'}
+                size="sm"
+                onClick={() => setFilterStatus('recogido')}
+                className="bg-blue-500/20 text-blue-400 border-blue-500/30 hover:bg-blue-500/30"
+              >
+                Recogidos ({pedidosRecogidos})
+              </Button>
+              <Button
+                variant={filterStatus === 'en_ruta' ? 'default' : 'outline'}
+                size="sm"
+                onClick={() => setFilterStatus('en_ruta')}
+                className="bg-orange-500/20 text-orange-400 border-orange-500/30 hover:bg-orange-500/30"
+              >
+                En ruta ({pedidosEnRuta})
+              </Button>
+              <Button
+                variant={filterStatus === 'entregado' ? 'default' : 'outline'}
+                size="sm"
+                onClick={() => setFilterStatus('entregado')}
+                className="bg-purple-500/20 text-purple-400 border-purple-500/30 hover:bg-purple-500/30"
+              >
+                Entregados ({pedidosEntregados})
+              </Button>
             </div>
           </div>
         </CardContent>
@@ -269,7 +399,7 @@ export function AlmacenistaView() {
         <CardHeader>
           <CardTitle className="flex items-center space-x-2">
             <Package className="w-5 h-5 text-yellow-400" />
-            <span>Pedidos a Surtir</span>
+            <span>Pedidos de la Sucursal</span>
             <Badge variant="secondary" className="ml-2">
               {filteredPedidos.length} pedidos
             </Badge>
@@ -296,74 +426,94 @@ export function AlmacenistaView() {
                     <TableHead>Productos</TableHead>
                     <TableHead className="w-32">Estado</TableHead>
                     <TableHead className="w-32">Ubicación</TableHead>
+                    <TableHead className="w-40">Repartidor</TableHead>
                     <TableHead className="w-40">Acciones</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {filteredPedidos.map((pedido) => {
-                    const isUpdating = updatingPedido === String(pedido.id);
-                    const productos = parseProductosDetalle(pedido.productos_detalle || '[]');
+                    const isUpdating = updatingPedido === String(pedido.id_p);
+                    const productosDetalle = parseProductosDetalle(pedido.prode_p || '[]');
+                    const productosSimple = parseProdP(pedido.prod_p);
+                    const totalProductos = contarProductosPedido(pedido);
                     
                     return (
-                      <TableRow key={pedido.id} className="hover:bg-zinc-800/50">
+                      <TableRow key={pedido.id_p} className="hover:bg-zinc-800/50">
                         <TableCell className="font-mono font-bold text-yellow-400">
-                          #{pedido.id}
+                          #{pedido.id_p}
                         </TableCell>
                         <TableCell>
                           <div className="space-y-2">
                             <div className="flex items-center space-x-2">
                               <span className="text-sm text-muted">
-                                {pedido.productos_detalle ? `${productos.length} productos` : pedido.productos}
+                                {totalProductos} productos total
                               </span>
-                              {pedido.productos_detalle && (
+                              {(pedido.prode_p || pedido.prod_p) && (
                                 <Button
                                   variant="ghost"
                                   size="sm"
-                                  onClick={() => toggleProductDetails(String(pedido.id))}
+                                  onClick={() => toggleProductDetails(String(pedido.id_p))}
                                   className="h-6 px-2 text-xs text-yellow-400 hover:bg-yellow-400/10"
                                 >
-                                  {showProductDetails[String(pedido.id)] ? 'Ocultar' : 'Ver detalles'}
+                                  {showProductDetails[String(pedido.id_p)] ? 'Ocultar' : 'Ver detalles'}
                                 </Button>
                               )}
                             </div>
                             
-                            {showProductDetails[String(pedido.id)] && pedido.productos_detalle && (
+                            {showProductDetails[String(pedido.id_p)] && (
                               <div className="bg-zinc-800/50 rounded-lg p-3 mt-2">
-                                <div className="grid grid-cols-4 gap-2 text-xs">
+                                <div className="grid grid-cols-3 gap-2 text-xs">
                                   <div className="font-medium text-yellow-400">Código</div>
                                   <div className="font-medium text-yellow-400">Producto</div>
                                   <div className="font-medium text-yellow-400 text-right">Cant.</div>
-                                  <div className="font-medium text-yellow-400">Ubicación</div>
-                                  {productos.map((producto: any, idx: number) => (
-                                    <React.Fragment key={idx}>
-                                      <div className="font-mono text-yellow-300">{producto.codigo}</div>
-                                      <div className="text-white">{producto.nombre}</div>
-                                      <div className="text-yellow-400 font-bold text-right">{producto.cantidad}</div>
-                                      <div className="text-blue-400">{getUbicacionProducto(producto.codigo)}</div>
-                                    </React.Fragment>
-                                  ))}
+                                  
+                                  {/* Mostrar productos desde prode_p si está disponible */}
+                                  {productosDetalle.length > 0 ? (
+                                    productosDetalle.map((producto: any, idx: number) => (
+                                      <React.Fragment key={idx}>
+                                        <div className="font-mono text-yellow-300">{producto.codigo}</div>
+                                        <div className="text-white">{producto.nombre}</div>
+                                        <div className="text-yellow-400 font-bold text-right">{producto.cantidad}</div>
+                                      </React.Fragment>
+                                    ))
+                                  ) : (
+                                    /* Mostrar productos desde prod_p como fallback */
+                                    productosSimple.map((producto: any, idx: number) => (
+                                      <React.Fragment key={idx}>
+                                        <div className="font-mono text-yellow-300">{producto.codigo}</div>
+                                        <div className="text-white">Código: {producto.codigo}</div>
+                                        <div className="text-yellow-400 font-bold text-right">{producto.cantidad}</div>
+                                      </React.Fragment>
+                                    ))
+                                  )}
                                 </div>
                               </div>
                             )}
                           </div>
                         </TableCell>
                         <TableCell>
-                          <Badge className={getStatusColor(pedido.estado)}>
-                            {getStatusText(pedido.estado)}
+                          <Badge className={getStatusColor(pedido.sta_p)}>
+                            {getStatusText(pedido.sta_p)}
                           </Badge>
                         </TableCell>
                         <TableCell>
                           <div className="flex items-center space-x-2">
                             <MapPin className="w-4 h-4 text-blue-400" />
-                            <span className="text-sm">Sucursal {pedido.sucursal_asignada}</span>
+                            <span className="text-sm">Sucursal {pedido.suc_p}</span>
                           </div>
                         </TableCell>
                         <TableCell>
                           <div className="flex items-center space-x-2">
-                            {pedido.estado === 'pendiente' && (
+                            <Truck className="w-4 h-4 text-green-400" />
+                            <span className="text-sm">{getRepartidorNombre(pedido.del_p)}</span>
+                          </div>
+                        </TableCell>
+                        <TableCell>
+                          <div className="flex items-center space-x-2">
+                            {pedido.sta_p === 'pendiente' && (
                               <Button
                                 size="sm"
-                                onClick={() => handleUpdatePedidoStatus(pedido.id, 'surtido', 'Marcar como surtido')}
+                                onClick={() => handleUpdatePedidoStatus(pedido.id_p, 'surtido', 'Marcar como surtido')}
                                 disabled={isUpdating}
                                 className="bg-green-600 hover:bg-green-700 text-white"
                               >

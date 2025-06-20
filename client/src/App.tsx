@@ -11,41 +11,47 @@ import {
 } from 'react-router-dom';
 import { useState, useEffect } from 'react';
 
-// Usuarios simulados
-const adminUsers = [
-  { username: 'admin', password: 'admin123', nombre: 'Administrador' },
-];
-const almacenistas = [
-  { username: 'pedro', password: 'almacen1', nombre: 'Pedro García' },
-  { username: 'lucia', password: 'almacen2', nombre: 'Lucía Fernández' },
-  { username: 'roberto', password: 'almacen3', nombre: 'Roberto Díaz' },
-];
-const repartidores = [
-  { username: 'juan', password: 'reparto1', nombre: 'Juan Pérez' },
-  { username: 'ana', password: 'reparto2', nombre: 'Ana López' },
-  { username: 'carlos', password: 'reparto3', nombre: 'Carlos Ruiz' },
-  { username: 'maria', password: 'reparto4', nombre: 'María Torres' },
-];
-
-function getUserType(username: string): 'admin' | 'almacenista' | 'repartidor' {
-  if (adminUsers.some(u => u.username === username)) return 'admin';
-  if (almacenistas.some(u => u.username === username)) return 'almacenista';
-  if (repartidores.some(u => u.username === username)) return 'repartidor';
-  // fallback, but shouldn't happen
-  return 'repartidor';
+// Tipo para usuarios del CSV
+interface CSVUser {
+  id_u: string;
+  type_u: string;
+  user_u: string;
+  pass_u: string;
+  suc_u: string;
+  name_u: string;
 }
 
-function getUserName(username: string): string {
-  const user = [...adminUsers, ...almacenistas, ...repartidores].find(u => u.username === username);
-  return user ? user.nombre : '';
-}
-
-type User = { username: string; type: 'admin' | 'repartidor' | 'almacenista'; nombre: string } | null;
+type User = { username: string; type: 'admin' | 'repartidor' | 'almacenista'; nombre: string; id_u: string } | null;
 
 function App() {
   const [user, setUser] = useState<User>(null);
   const [form, setForm] = useState({ username: '', password: '' });
   const [error, setError] = useState('');
+  const [csvUsers, setCsvUsers] = useState<CSVUser[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  // Cargar usuarios desde CSV al inicio
+  useEffect(() => {
+    fetch('/data/csv dbs/users.csv')
+      .then(res => res.text())
+      .then(text => {
+        // Parsear CSV a objeto
+        const lines = text.split('\n').filter(Boolean);
+        const headers = lines[0].split(',').map(h => h.trim());
+        const data = lines.slice(1).map(line => {
+          const values = line.split(',');
+          const obj: any = {};
+          headers.forEach((h, i) => { obj[h] = values[i]; });
+          return obj;
+        });
+        setCsvUsers(data);
+        setLoading(false);
+      })
+      .catch(error => {
+        console.error('Error cargando usuarios:', error);
+        setLoading(false);
+      });
+  }, []);
 
   // Restaurar usuario desde localStorage al cargar la app
   useEffect(() => {
@@ -59,15 +65,31 @@ function App() {
     }
   }, []);
 
+  function getUserType(type_u: string): 'admin' | 'almacenista' | 'repartidor' {
+    switch (type_u) {
+      case 'admin': return 'admin';
+      case 'almacenista': return 'almacenista';
+      case 'repartidor': return 'repartidor';
+      default: return 'repartidor';
+    }
+  }
+
   function handleLogin(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
     const { username, password } = form;
-    let valid = false;
-    if (adminUsers.some(u => u.username === username && u.password === password)) valid = true;
-    if (almacenistas.some(u => u.username === username && u.password === password)) valid = true;
-    if (repartidores.some(u => u.username === username && u.password === password)) valid = true;
-    if (valid) {
-      const loggedUser = { username, type: getUserType(username), nombre: getUserName(username) };
+    
+    // Buscar usuario en CSV por user_u y pass_u
+    const foundUser = csvUsers.find(u => 
+      u.user_u === username && u.pass_u === password
+    );
+
+    if (foundUser) {
+      const loggedUser = { 
+        username, 
+        type: getUserType(foundUser.type_u), 
+        nombre: foundUser.name_u,
+        id_u: foundUser.id_u
+      };
       setUser(loggedUser);
       if (typeof window !== 'undefined') {
         window.localStorage.setItem('user', JSON.stringify(loggedUser));
@@ -86,6 +108,17 @@ function App() {
       window.localStorage.removeItem('user');
       window.localStorage.setItem('userType', '');
     }
+  }
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-gradient-mesh flex items-center justify-center p-4">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-yellow-400 mx-auto"></div>
+          <p className="text-white mt-4">Cargando sistema...</p>
+        </div>
+      </div>
+    );
   }
 
   if (!user) {

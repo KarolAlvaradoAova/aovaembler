@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { fetchPedidos, fetchRepartidores, fetchSucursales } from '@/lib/utils';
+import { fetchPedidos, fetchUsersFromCSV, fetchSucursales } from '@/lib/utils';
 import { Select, SelectTrigger, SelectContent, SelectItem, SelectValue } from '@/components/ui/select';
 
 export function DeliveryMap() {
@@ -13,11 +13,11 @@ export function DeliveryMap() {
   useEffect(() => {
     Promise.all([
       fetchPedidos(),
-      fetchRepartidores(),
+      fetchUsersFromCSV(),
       fetchSucursales()
-    ]).then(([pedidosData, repartidoresData, sucursalesData]) => {
+    ]).then(([pedidosData, usersData, sucursalesData]) => {
       setPedidos(pedidosData);
-      // setRepartidores(repartidoresData);
+      // setRepartidores(usersData.filter(u => u.role === 'repartidor'));
       setSucursales(sucursalesData);
       setLoading(false);
     });

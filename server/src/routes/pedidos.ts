@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { loadPedidos, updatePedido, updateParadaRuta, saveCSV } from '../../database/csvLoader';
+import { loadPedidos, updatePedido, saveCSV } from '../../database/csvLoader';
 
 const router = Router();
 
@@ -19,23 +19,41 @@ router.patch('/:id', async (req, res) => {
     const pedidoId = req.params.id;
     const updateFields = req.body;
     
-    console.log(`🔄 API: Actualizando pedido ${pedidoId} con campos:`, updateFields);
+    console.log(`🔄 API: Actualizando pedido ${pedidoId}`);
+    console.log('📥 Campos recibidos:', updateFields);
+    console.log('📥 Body completo:', req.body);
+    
+    // No convertir estado a sta_p, usar directamente el campo estado
+    console.log('📤 Campos a actualizar:', updateFields);
     
     // Actualizar pedido en CSV
     const pedidoActualizado = await updatePedido(pedidoId, updateFields);
     
     if (!pedidoActualizado) {
+      console.log('❌ Pedido no encontrado');
       return res.status(404).json({ error: 'Pedido no encontrado' });
     }
 
-    // Si el estado es entregado, actualizar también la parada de ruta correspondiente
-    if (updateFields.estado === 'entregado' || updateFields.estado === 'entregada' || updateFields.estado === 'completed') {
-      try {
-        await updateParadaRuta(pedidoId, { status: 'completed', actual_arrival: new Date().toISOString() });
-        console.log(`✅ Parada de ruta para pedido ${pedidoId} marcada como completada`);
-      } catch (err) {
-        console.error(`❌ No se pudo actualizar la parada de ruta para pedido ${pedidoId}:`, err);
+    console.log('✅ Pedido actualizado:', pedidoActualizado);
+    
+    // ✅ NUEVO: Integrar con StatusService para actualización automática
+    try {
+      const { StatusService } = require('../services/statusService');
+      
+      // Si el pedido tiene un repartidor asignado, actualizar su estado
+      if (pedidoActualizado.del_p) {
+        await StatusService.updateRepartidorStatus(Number(pedidoActualizado.del_p));
+        console.log(`📊 Estado del repartidor ${pedidoActualizado.del_p} actualizado automáticamente`);
       }
+      
+      // Si se marcó como entregado, notificar entrega completada
+      if (updateFields.estado === 'entregado' && pedidoActualizado.del_p) {
+        await StatusService.onDeliveryCompleted(Number(pedidoActualizado.del_p), Number(pedidoId));
+        console.log(`📦 Entrega completada notificada para repartidor ${pedidoActualizado.del_p}`);
+      }
+      
+    } catch (statusError) {
+      console.error('⚠️ Error en StatusService, pero pedido se actualizó:', statusError);
     }
     
     console.log(`✅ API: Pedido ${pedidoId} actualizado exitosamente`);
